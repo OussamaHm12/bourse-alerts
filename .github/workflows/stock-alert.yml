@@ -1,0 +1,62 @@
+name: Moroccan Stock Alert
+
+on:
+  schedule:
+    - cron: "0 */3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: moroccan-stock-alert
+  cancel-in-progress: false
+
+jobs:
+  check-prices:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Restore alert state
+        uses: actions/cache/restore@v4
+        with:
+          path: alert_state.json
+          key: stock-alert-state-${{ github.run_id }}
+          restore-keys: |
+            stock-alert-state-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run stock alert
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ALERT_STATE_FILE: alert_state.json
+        run: python stock_alert.py
+
+      - name: Save alert state cache
+        uses: actions/cache/save@v4
+        if: always()
+        continue-on-error: true
+        with:
+          path: alert_state.json
+          key: stock-alert-state-${{ github.run_id }}
+
+      - name: Upload alert state artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: alert-state
+          path: alert_state.json
+          if-no-files-found: ignore
+          retention-days: 30
