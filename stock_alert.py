@@ -25,7 +25,7 @@ STOCKS = {
     "TGCC": {
         "symbol": "TGC",
         "name": "TGCC",
-        "threshold": 700.0,
+        "threshold": 9999.0,
         "sources": [
             {
                 "name": "Casablanca Bourse",
@@ -42,7 +42,7 @@ STOCKS = {
     "AKDITAL": {
         "symbol": "AKT",
         "name": "Akdital",
-        "threshold": 1100.0,
+        "threshold": 9999.0,
         "sources": [
             {
                 "name": "Casablanca Bourse",
@@ -59,7 +59,7 @@ STOCKS = {
     "ATTIJARIWAFA_BANK": {
         "symbol": "ATW",
         "name": "Attijariwafa Bank",
-        "threshold": 650.0,
+        "threshold": 9999.0,
         "sources": [
             {
                 "name": "Casablanca Bourse",
