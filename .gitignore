@@ -2,3 +2,8 @@ alert_state.json
 test_alert_state.json
 __pycache__/
 .env
+data/
+.pytest_cache/
+.ruff_cache/
+.venv/
+*.pyc

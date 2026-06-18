@@ -1,32 +1,44 @@
-name: Moroccan Stock Alert
+name: Moroccan Stock Intelligence
 
 on:
   schedule:
     - cron: "0 */3 * * *"
+    - cron: "30 18 * * 1-5"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run mode"
+        required: true
+        default: "run-once"
+        type: choice
+        options:
+          - run-once
+          - collect
+          - analyze
+          - daily-summary
 
 permissions:
   contents: read
 
 concurrency:
-  group: moroccan-stock-alert
+  group: moroccan-stock-intelligence
   cancel-in-progress: false
 
 jobs:
-  check-prices:
+  market-intelligence:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Restore alert state
+      - name: Restore market database
         uses: actions/cache/restore@v4
         with:
-          path: alert_state.json
-          key: stock-alert-state-${{ github.run_id }}
+          path: data/market.db
+          key: market-db-${{ github.run_id }}
           restore-keys: |
-            stock-alert-state-
+            market-db-
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -37,26 +49,39 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run stock alert
+      - name: Select run mode
+        id: mode
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event.schedule }}" == "30 18 * * 1-5" ]]; then
+            echo "mode=daily-summary" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=run-once" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run intelligence platform
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          ALERT_STATE_FILE: alert_state.json
-        run: python stock_alert.py
+          DATABASE_URL: sqlite:///data/market.db
+          LOG_LEVEL: INFO
+        run: python -m moroccan_stock_intelligence.cli "${{ steps.mode.outputs.mode }}"
 
-      - name: Save alert state cache
+      - name: Save market database cache
         uses: actions/cache/save@v4
         if: always()
         continue-on-error: true
         with:
-          path: alert_state.json
-          key: stock-alert-state-${{ github.run_id }}
+          path: data/market.db
+          key: market-db-${{ github.run_id }}
 
-      - name: Upload alert state artifact
+      - name: Upload market database artifact
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: alert-state
-          path: alert_state.json
+          name: market-db
+          path: data/market.db
           if-no-files-found: ignore
           retention-days: 30
