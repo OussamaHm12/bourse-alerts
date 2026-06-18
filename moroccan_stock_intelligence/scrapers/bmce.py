@@ -33,7 +33,7 @@ class BMCECapitalScraper(MarketDataScraper):
 
         for tr in soup.find_all("tr"):
             cells = [normalize_text(td.get_text(" ")) for td in tr.find_all("td")]
-            if len(cells) < 4:
+            if len(cells) != 4 or cells[0].lower().startswith("valeur cours"):
                 continue
             link = tr.find("a", href=re.compile(r"details", re.IGNORECASE))
             if not isinstance(link, Tag):

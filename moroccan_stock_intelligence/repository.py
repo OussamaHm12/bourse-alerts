@@ -34,6 +34,16 @@ def upsert_stock(session: Session, snapshot: StockSnapshot) -> Stock:
 
 def store_snapshot(session: Session, snapshot: StockSnapshot) -> None:
     stock = upsert_stock(session, snapshot)
+    existing_price = session.scalar(
+        select(Price).where(
+            Price.stock_id == stock.id,
+            Price.observed_at == snapshot.observed_at,
+            Price.source == snapshot.source,
+        )
+    )
+    if existing_price is not None:
+        return
+
     price = Price(
         stock_id=stock.id,
         observed_at=snapshot.observed_at,

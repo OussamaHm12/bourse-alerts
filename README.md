@@ -125,6 +125,7 @@ DATABASE_URL=sqlite:///data/market.db
 HTTP_TIMEOUT_SECONDS=20
 HTTP_RETRIES=3
 HTTP_VERIFY_SSL=true
+HTTP_ALLOW_INSECURE_SOURCE_RETRY=false
 LOG_LEVEL=INFO
 WATCHLIST_FILE=config/watchlist.json
 MIN_OPPORTUNITY_SCORE=80
@@ -280,7 +281,7 @@ Testing strategy:
 - Prefer official Casablanca Bourse data when available.
 - Treat public delayed quotes as intelligence inputs, not execution-grade data.
 - Do not increase scraping frequency aggressively; the current 3-hour cadence is intentionally polite.
-- Keep `HTTP_VERIFY_SSL=true` in production. Set it to `false` only for a controlled local environment with certificate-chain issues.
+- Keep `HTTP_VERIFY_SSL=true` in production. GitHub Actions enables `HTTP_ALLOW_INSECURE_SOURCE_RETRY=true` so a public market-data source with a broken certificate chain can be retried without disabling SSL globally.
 
 ## Future Roadmap
 

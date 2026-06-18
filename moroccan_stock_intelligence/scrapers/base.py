@@ -4,6 +4,7 @@ import logging
 from abc import ABC, abstractmethod
 
 import requests
+import urllib3
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from moroccan_stock_intelligence.config import settings
@@ -44,12 +45,24 @@ class MarketDataScraper(ABC):
     )
     def fetch_html(self, url: str) -> str:
         LOG.info("fetching url=%s source=%s", url, self.name)
-        response = self.session.get(
-            url,
-            timeout=settings.http_timeout_seconds,
-            allow_redirects=True,
-            verify=settings.http_verify_ssl,
-        )
+        try:
+            response = self.session.get(
+                url,
+                timeout=settings.http_timeout_seconds,
+                allow_redirects=True,
+                verify=settings.http_verify_ssl,
+            )
+        except requests.exceptions.SSLError:
+            if not settings.http_allow_insecure_source_retry:
+                raise
+            LOG.warning("ssl_verify_failed_retrying_without_verification url=%s source=%s", url, self.name)
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            response = self.session.get(
+                url,
+                timeout=settings.http_timeout_seconds,
+                allow_redirects=True,
+                verify=False,
+            )
         response.raise_for_status()
         return response.text
 

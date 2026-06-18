@@ -1,3 +1,4 @@
+from moroccan_stock_intelligence.scrapers.bmce import BMCECapitalScraper
 from moroccan_stock_intelligence.scrapers.casablanca import CasablancaBourseScraper
 from moroccan_stock_intelligence.utils import parse_number
 
@@ -5,6 +6,7 @@ from moroccan_stock_intelligence.utils import parse_number
 def test_parse_moroccan_numbers():
     assert parse_number("1 234,50") == 1234.50
     assert parse_number("2,54 %") == 2.54
+    assert parse_number("1,282 M") == 1282000.0
     assert parse_number("-") is None
 
 
@@ -39,3 +41,26 @@ def test_casablanca_table_parser_extracts_stock_row():
     assert row.daily_variation == 0.32
     assert row.volume == 9654321.10
     assert row.market_cap == 25000000000.00
+
+
+def test_bmce_parser_ignores_aggregate_rows():
+    html = """
+    <table>
+      <tr>
+        <td>Valeur Cours Variation % Quantité Zellidja 215,00 +4,88% 53 Addoha 36,70 +4,86% 1,282 M</td>
+        <td><a href="/bkbbourse/details/783273%2C102%2C608">Zellidja</a></td>
+        <td>215,00</td><td>+4,88%</td><td>53</td>
+      </tr>
+      <tr>
+        <td><a href="/bkbbourse/details/783273%2C102%2C608">Zellidja</a></td>
+        <td>215,00</td><td>+4,88%</td><td>53</td>
+      </tr>
+      <tr>
+        <td><a href="/bkbbourse/details/2585582%2C102%2C608">Addoha</a></td>
+        <td>36,70</td><td>+4,86%</td><td>1,282 M</td>
+      </tr>
+    </table>
+    """
+    rows = BMCECapitalScraper().parse(html)
+    assert [row.company_name for row in rows] == ["Zellidja", "Addoha"]
+    assert rows[1].volume == 1282000.0

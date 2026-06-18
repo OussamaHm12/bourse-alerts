@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from urllib.parse import urljoin
 
 import requests
+import urllib3
 from bs4 import BeautifulSoup, Tag
 
 from moroccan_stock_intelligence.config import settings
@@ -29,18 +30,35 @@ EVENT_TERMS = {
 
 def collect_news(symbol_to_name: dict[str, str]) -> list[NewsItem]:
     try:
-        response = requests.get(
+        response = _fetch_news_page()
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        LOG.warning("news_fetch_failed source=Casablanca Bourse Avis error=%s", exc)
+        return []
+    return parse_official_news(response.text, symbol_to_name)
+
+
+def _fetch_news_page() -> requests.Response:
+    try:
+        return requests.get(
             OFFICIAL_NEWS_URL,
             headers=HEADERS,
             timeout=settings.http_timeout_seconds,
             allow_redirects=True,
             verify=settings.http_verify_ssl,
         )
-        response.raise_for_status()
-    except requests.RequestException as exc:
-        LOG.warning("news_fetch_failed source=Casablanca Bourse Avis error=%s", exc)
-        return []
-    return parse_official_news(response.text, symbol_to_name)
+    except requests.exceptions.SSLError:
+        if not settings.http_allow_insecure_source_retry:
+            raise
+        LOG.warning("news_ssl_verify_failed_retrying_without_verification")
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        return requests.get(
+            OFFICIAL_NEWS_URL,
+            headers=HEADERS,
+            timeout=settings.http_timeout_seconds,
+            allow_redirects=True,
+            verify=False,
+        )
 
 
 def parse_official_news(html: str, symbol_to_name: dict[str, str]) -> list[NewsItem]:

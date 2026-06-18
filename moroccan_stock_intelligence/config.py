@@ -17,6 +17,9 @@ class Settings:
     http_timeout_seconds: float = float(os.getenv("HTTP_TIMEOUT_SECONDS", "20"))
     http_retries: int = int(os.getenv("HTTP_RETRIES", "3"))
     http_verify_ssl: bool = os.getenv("HTTP_VERIFY_SSL", "true").lower() not in {"0", "false", "no"}
+    http_allow_insecure_source_retry: bool = os.getenv(
+        "HTTP_ALLOW_INSECURE_SOURCE_RETRY", "false"
+    ).lower() in {"1", "true", "yes"}
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     watchlist_file: Path = Path(os.getenv("WATCHLIST_FILE", "config/watchlist.json"))
     min_opportunity_score: float = float(os.getenv("MIN_OPPORTUNITY_SCORE", "80"))

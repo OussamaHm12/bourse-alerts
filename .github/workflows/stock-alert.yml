@@ -67,6 +67,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DATABASE_URL: sqlite:///data/market.db
           LOG_LEVEL: INFO
+          HTTP_ALLOW_INSECURE_SOURCE_RETRY: true
         run: python -m moroccan_stock_intelligence.cli "${{ steps.mode.outputs.mode }}"
 
       - name: Save market database cache
