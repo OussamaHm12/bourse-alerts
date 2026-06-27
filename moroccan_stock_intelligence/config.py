@@ -24,5 +24,23 @@ class Settings:
     watchlist_file: Path = Path(os.getenv("WATCHLIST_FILE", "config/watchlist.json"))
     min_opportunity_score: float = float(os.getenv("MIN_OPPORTUNITY_SCORE", "80"))
 
+    # Portfolio holdings. PORTFOLIO_JSON (raw JSON) takes priority over the file so
+    # personal buy prices can be passed as a private secret instead of being committed.
+    portfolio_file: Path = Path(os.getenv("PORTFOLIO_FILE", "config/portfolio.json"))
+    portfolio_json: str | None = os.getenv("PORTFOLIO_JSON")
+    trading_fee_rate: float = float(os.getenv("TRADING_FEE_RATE", "0.005"))
+
+    # Sell/hold advice thresholds (score + profit mix).
+    take_profit_pct: float = float(os.getenv("TAKE_PROFIT_PCT", "15"))
+    stop_loss_pct: float = float(os.getenv("STOP_LOSS_PCT", "-8"))
+    sell_avoid_score: float = float(os.getenv("SELL_AVOID_SCORE", "60"))
+    weak_momentum_pct: float = float(os.getenv("WEAK_MOMENTUM_PCT", "-3"))
+
+    # Intraday urgent alert: only fires for stocks you actually hold.
+    urgent_crash_pct: float = float(os.getenv("URGENT_CRASH_PCT", "-5"))
+
+    # Morocco is UTC+1 year-round (UTC+0 during Ramadan). Used only for display labels.
+    morocco_utc_offset: int = int(os.getenv("MOROCCO_UTC_OFFSET", "1"))
+
 
 settings = Settings()

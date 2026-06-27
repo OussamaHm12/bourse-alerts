@@ -11,6 +11,8 @@ from moroccan_stock_intelligence.config import settings
 from moroccan_stock_intelligence.models import Alert, Stock
 from moroccan_stock_intelligence.repository import create_alert_once, store_signal
 from moroccan_stock_intelligence.services.analytics import MetricSet
+from moroccan_stock_intelligence.services.digest import build_urgent_alert
+from moroccan_stock_intelligence.services.portfolio import Portfolio, evaluate_holding
 from moroccan_stock_intelligence.services.scoring import ScoreResult
 from moroccan_stock_intelligence.services.telegram import send_telegram_message
 
@@ -92,6 +94,59 @@ def dispatch_unsent_alerts(session: Session) -> int:
         if sent:
             alert.sent = 1
             count += 1
+    session.commit()
+    return count
+
+
+def dispatch_urgent_holding_alerts(
+    session: Session,
+    portfolio: Portfolio,
+    metrics: list[MetricSet],
+    scores: dict[str, ScoreResult],
+) -> int:
+    """Send an immediate Telegram alert when a HELD stock crashes intraday.
+
+    Deduplicated to once per symbol per day via the alerts table, so the hourly
+    intraday watch never spams the same crash twice.
+    """
+    if not settings.telegram_bot_token or not settings.telegram_chat_id:
+        LOG.warning("telegram_credentials_missing urgent_dispatch_skipped=true")
+        return 0
+
+    metrics_by_symbol = {metric.symbol: metric for metric in metrics}
+    stocks = {stock.symbol: stock for stock in session.scalars(select(Stock)).all()}
+    now_key = datetime.now(UTC).strftime("%Y-%m-%d")
+    count = 0
+
+    for holding in portfolio.holdings:
+        metric = metrics_by_symbol.get(holding.symbol)
+        if metric is None or metric.daily_variation is None:
+            continue
+        if metric.daily_variation > settings.urgent_crash_pct:
+            continue  # not a crash for a held position
+        stock = stocks.get(holding.symbol)
+        if stock is None:
+            continue
+
+        event_key = f"{holding.symbol}-urgent-crash-{now_key}"
+        evaluation = evaluate_holding(
+            holding, metric, scores.get(holding.symbol), portfolio.fee_rate
+        )
+        message = build_urgent_alert(evaluation)
+        alert = create_alert_once(
+            session, stock.id, event_key, "urgent_holding_crash", message
+        )
+        if alert is None:
+            continue  # already alerted today
+        try:
+            sent = send_telegram_message(message, parse_mode="HTML")
+        except requests.RequestException as exc:
+            LOG.error("urgent_alert_send_failed symbol=%s error=%s", holding.symbol, exc)
+            continue
+        if sent:
+            alert.sent = 1
+            count += 1
+
     session.commit()
     return count
 

@@ -10,7 +10,11 @@ from moroccan_stock_intelligence.db import get_engine, get_session_factory, init
 from moroccan_stock_intelligence.models import Alert, News, Signal
 from moroccan_stock_intelligence.repository import load_price_frame
 from moroccan_stock_intelligence.services.analytics import compute_metrics
-from moroccan_stock_intelligence.services.portfolio import load_watchlist
+from moroccan_stock_intelligence.services.portfolio import (
+    evaluate_portfolio,
+    load_portfolio,
+    load_watchlist,
+)
 from moroccan_stock_intelligence.services.scoring import score_opportunity
 
 st.set_page_config(page_title="Moroccan Stock Intelligence", layout="wide")
@@ -21,6 +25,15 @@ def session_factory():
     engine = get_engine()
     init_db(engine)
     return get_session_factory(engine)
+
+
+@st.cache_data(ttl=120)
+def load_metrics_scores():
+    with session_factory()() as session:
+        prices = load_price_frame(session)
+    metrics = compute_metrics(prices)
+    scores = {metric.symbol: score_opportunity(metric) for metric in metrics}
+    return metrics, scores
 
 
 @st.cache_data(ttl=120)
@@ -186,6 +199,55 @@ elif page == "News Feed":
     )
 
 elif page == "Portfolio Watchlist":
+    st.subheader("My Holdings")
+    portfolio = load_portfolio()
+    if not portfolio.holdings:
+        st.info(
+            "No holdings configured. Add your positions in `config/portfolio.json` "
+            "(symbol, quantity, buy_price)."
+        )
+    else:
+        metrics, scores = load_metrics_scores()
+        metrics_by_symbol = {metric.symbol: metric for metric in metrics}
+        evaluations = evaluate_portfolio(portfolio, metrics_by_symbol, scores)
+
+        total_value = sum(e.market_value for e in evaluations if e.market_value is not None)
+        total_cost = sum(e.cost_basis for e in evaluations)
+        total_net = sum(e.net_pl for e in evaluations if e.net_pl is not None)
+        total_pct = (total_net / total_cost * 100) if total_cost else 0.0
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Portfolio Value", f"{total_value:,.0f} MAD")
+        c2.metric("Net P/L (fees incl.)", f"{total_net:+,.0f} MAD", f"{total_pct:+.1f}%")
+        c3.metric("Positions", len(evaluations))
+
+        holdings_df = pd.DataFrame(
+            [
+                {
+                    "symbol": e.symbol,
+                    "company": e.company_name,
+                    "qty": e.quantity,
+                    "buy_price": e.buy_price,
+                    "price": e.current_price,
+                    "daily_var_%": e.daily_variation,
+                    "value_MAD": e.market_value,
+                    "net_pl_MAD": e.net_pl,
+                    "net_pl_%": e.net_pl_pct,
+                    "advice": e.advice,
+                    "reason": e.advice_reason,
+                }
+                for e in evaluations
+            ]
+        )
+        st.dataframe(
+            holdings_df.sort_values("advice"),
+            use_container_width=True,
+            column_config={
+                "advice": st.column_config.TextColumn("Advice"),
+                "net_pl_%": st.column_config.NumberColumn("Net P/L %", format="%.1f"),
+            },
+        )
+
+    st.subheader("Watchlist")
     watchlist = load_watchlist(settings.watchlist_file)
     st.write(f"Configured symbols: {', '.join(watchlist) if watchlist else 'none'}")
     watch_df = metrics_df[metrics_df["symbol"].isin(watchlist)]

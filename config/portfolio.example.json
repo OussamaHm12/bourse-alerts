@@ -1,0 +1,7 @@
+{
+  "fee_rate": 0.005,
+  "holdings": [
+    { "symbol": "ATW", "quantity": 10, "buy_price": 410.0 },
+    { "symbol": "TGC", "quantity": 5, "buy_price": 700.0 }
+  ]
+}

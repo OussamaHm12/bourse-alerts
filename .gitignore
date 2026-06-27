@@ -1,5 +1,6 @@
 alert_state.json
 test_alert_state.json
+config/portfolio.json
 __pycache__/
 .env
 data/

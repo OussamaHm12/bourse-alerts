@@ -12,14 +12,16 @@ This project is for market intelligence and notifications only. It does not plac
 - Computes momentum, moving averages, volatility, volume anomalies, relative performance, support/resistance distance, drawdowns, and 52-week proximity.
 - Scores opportunities from 0 to 100 with component explanations.
 - Collects official Casablanca Bourse announcements and links them to known symbols when possible.
-- Sends Telegram alerts for meaningful events:
-  - price crash of -5% or more
-  - volume spike above 2x recent average
-  - breakout or near 52-week high
-  - support test
-  - opportunity score above `MIN_OPPORTUNITY_SCORE`
-- Sends a daily market summary.
+- Sends exactly two Telegram digests per trading day, at 08:00 and 16:00 Morocco time:
+  - your portfolio: current value, net profit/loss after fees, and a SELL/HOLD advice per position
+  - a short market summary (top movers and the opportunity of the day)
+- Sends an immediate urgent alert only when a stock you actually own crashes -5% or more intraday.
+- Tracks your real holdings (quantity + buy price) and tells you the net gain if you sell now.
 - Provides a Streamlit dashboard.
+
+Detected technical events (price crash, volume spike, breakout, support test, high opportunity
+score) are still recorded in the database and surfaced inside the two daily digests, instead of
+firing a separate notification each time.
 
 Public Moroccan market data may be delayed, unavailable outside market hours, or inconsistent across providers. Casablanca Bourse states on its website that indices are real-time and prices are delayed by 15 minutes.
 
@@ -165,20 +167,32 @@ https://api.telegram.org/bot<TOKEN>/getUpdates
 python -m moroccan_stock_intelligence.cli init-db
 python -m moroccan_stock_intelligence.cli collect
 python -m moroccan_stock_intelligence.cli analyze
-python -m moroccan_stock_intelligence.cli send-alerts
+python -m moroccan_stock_intelligence.cli morning-digest
+python -m moroccan_stock_intelligence.cli afternoon-digest
+python -m moroccan_stock_intelligence.cli watch-holdings
 python -m moroccan_stock_intelligence.cli daily-summary
 python -m moroccan_stock_intelligence.cli run-once
 ```
 
-`run-once` collects prices, stores them, collects news, computes signals, creates alerts, and dispatches unsent Telegram messages.
+- `morning-digest` / `afternoon-digest`: collect, analyze, and send one consolidated Telegram
+  digest (portfolio advice + market summary). These are the only two scheduled notifications.
+- `watch-holdings`: collect and analyze, then send an urgent Telegram alert **only** if a stock
+  you own crashed `URGENT_CRASH_PCT` or more today (deduplicated to once per symbol per day).
+- `run-once`: collects prices, stores them, collects news, and computes signals. It no longer
+  pushes Telegram messages, so it is safe for ad-hoc local runs.
+- `send-alerts`: legacy per-event dispatch, kept for manual use.
 
 ## GitHub Actions
 
 [stock-alert.yml](.github/workflows/stock-alert.yml) runs:
 
-- every 3 hours: `run-once`
-- weekday daily summary at `18:30 UTC`: `daily-summary`
+- `07:00 UTC` weekdays (08:00 Morocco): `morning-digest`
+- `15:00 UTC` weekdays (16:00 Morocco): `afternoon-digest`
+- hourly `09:00–14:00 UTC` weekdays: `watch-holdings` (urgent alerts for held stocks only)
 - manual `workflow_dispatch` with mode selection
+
+Times are UTC. Morocco is UTC+1 year-round, except UTC+0 during Ramadan, so the labels can drift
+by one hour during that period (set `MOROCCO_UTC_OFFSET=0` if you want the labels to match).
 
 The workflow restores and saves `data/market.db` using GitHub Actions cache and uploads the database as an artifact.
 
@@ -228,7 +242,7 @@ docker compose --profile postgres up postgres
 
 ## Portfolio Watchlist
 
-Edit [config/watchlist.json](config/watchlist.json):
+Edit [config/watchlist.json](config/watchlist.json) for symbols you only want to track:
 
 ```json
 {
@@ -237,6 +251,44 @@ Edit [config/watchlist.json](config/watchlist.json):
 ```
 
 The dashboard watchlist page tracks performance, opportunity scores, and alert context for these symbols.
+
+## Portfolio Holdings (stocks you actually own)
+
+Copy [config/portfolio.example.json](config/portfolio.example.json) to `config/portfolio.json` and
+fill in each position. `config/portfolio.json` is gitignored so your buy prices stay private.
+
+```json
+{
+  "fee_rate": 0.005,
+  "holdings": [
+    { "symbol": "ATW", "quantity": 10, "buy_price": 410.0 },
+    { "symbol": "TGC", "quantity": 5, "buy_price": 700.0 }
+  ]
+}
+```
+
+- `quantity`: number of shares you hold.
+- `buy_price`: average price you paid per share, in MAD.
+- `fee_rate`: round-trip selling fee used for the net profit estimate (0.005 = 0.5%). Defaults to
+  `TRADING_FEE_RATE`.
+
+For GitHub Actions, do not commit the file. Instead add a repository secret `PORTFOLIO_JSON`
+containing the same JSON on a single line; the workflow reads it via the `PORTFOLIO_JSON` env var.
+
+### How the SELL / HOLD advice works
+
+For each holding the digest combines technical signals with your profit:
+
+- **SELL** if the stop-loss is hit (`net P/L <= STOP_LOSS_PCT`), the technical risk is high
+  (`AVOID score >= SELL_AVOID_SCORE`), or you have a large gain while momentum weakens
+  (`net P/L >= TAKE_PROFIT_PCT` and `momentum_30d <= WEAK_MOMENTUM_PCT`).
+- **HOLD** otherwise.
+
+The projected gain shown is **net of fees**: `current_price * quantity * (1 - fee_rate) - buy_price * quantity`.
+
+All thresholds are environment variables (see [.env.example](.env.example)), so you can tune the
+strategy without touching code. Long-window signals such as `momentum_30d` only become meaningful
+once the database has collected enough history.
 
 ## Scoring Model
 

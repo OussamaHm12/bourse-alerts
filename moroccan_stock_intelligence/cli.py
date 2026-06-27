@@ -15,12 +15,15 @@ from moroccan_stock_intelligence.services.alerts import (
     dispatch_unsent_alerts,
     generate_alerts,
 )
+from moroccan_stock_intelligence.services.alerts import dispatch_urgent_holding_alerts
 from moroccan_stock_intelligence.services.analytics import compute_metrics
 from moroccan_stock_intelligence.services.collector import (
     collect_market_snapshots,
     persist_snapshots,
 )
+from moroccan_stock_intelligence.services.digest import build_digest
 from moroccan_stock_intelligence.services.news import collect_news
+from moroccan_stock_intelligence.services.portfolio import evaluate_portfolio, load_portfolio
 from moroccan_stock_intelligence.services.scoring import score_opportunity
 from moroccan_stock_intelligence.services.telegram import send_telegram_message
 
@@ -35,6 +38,9 @@ def main(argv: list[str] | None = None) -> None:
     subparsers.add_parser("analyze")
     subparsers.add_parser("send-alerts")
     subparsers.add_parser("daily-summary")
+    subparsers.add_parser("morning-digest")
+    subparsers.add_parser("afternoon-digest")
+    subparsers.add_parser("watch-holdings")
     subparsers.add_parser("run-once")
     args = parser.parse_args(argv)
 
@@ -57,13 +63,18 @@ def main(argv: list[str] | None = None) -> None:
             LOG.info("alerts_dispatched count=%s", sent)
         elif command == "daily-summary":
             run_daily_summary(session)
+        elif command == "morning-digest":
+            run_digest(session, "Ouverture (08:00)")
+        elif command == "afternoon-digest":
+            run_digest(session, "Clôture (16:00)")
+        elif command == "watch-holdings":
+            run_watch_holdings(session)
         elif command == "run-once":
             snapshots = collect_market_snapshots()
             persist_snapshots(session, snapshots)
             run_news(session)
             run_analysis(session)
-            sent = dispatch_unsent_alerts(session)
-            LOG.info("run_complete alerts_sent=%s", sent)
+            LOG.info("run_complete")
         else:
             parser.error(f"unknown command: {command}")
 
@@ -93,6 +104,32 @@ def run_daily_summary(session) -> None:  # noqa: ANN001
     message = build_daily_summary(result["metrics"], result["scores"])  # type: ignore[arg-type]
     send_telegram_message(message)
     LOG.info("daily_summary_complete")
+
+
+def run_digest(session, period_label: str) -> None:  # noqa: ANN001
+    snapshots = collect_market_snapshots()
+    persist_snapshots(session, snapshots)
+    run_news(session)
+    result = run_analysis(session)
+    metrics = result["metrics"]
+    scores = result["scores"]
+    portfolio = load_portfolio()
+    metrics_by_symbol = {metric.symbol: metric for metric in metrics}  # type: ignore[union-attr]
+    holdings = evaluate_portfolio(portfolio, metrics_by_symbol, scores)  # type: ignore[arg-type]
+    message = build_digest(period_label, metrics, scores, holdings, portfolio)  # type: ignore[arg-type]
+    send_telegram_message(message, parse_mode="HTML")
+    LOG.info("digest_sent period=%s holdings=%s", period_label, len(holdings))
+
+
+def run_watch_holdings(session) -> None:  # noqa: ANN001
+    snapshots = collect_market_snapshots()
+    persist_snapshots(session, snapshots)
+    result = run_analysis(session)
+    portfolio = load_portfolio()
+    sent = dispatch_urgent_holding_alerts(
+        session, portfolio, result["metrics"], result["scores"]  # type: ignore[arg-type]
+    )
+    LOG.info("watch_holdings_complete urgent_sent=%s", sent)
 
 
 if __name__ == "__main__":

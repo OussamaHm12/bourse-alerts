@@ -2,16 +2,21 @@ name: Moroccan Stock Intelligence
 
 on:
   schedule:
-    - cron: "0 */3 * * *"
-    - cron: "30 18 * * 1-5"
+    # Times are UTC. Morocco is UTC+1 (UTC+0 during Ramadan, so labels can drift 1h).
+    - cron: "0 7 * * 1-5" # 08:00 Morocco - morning digest
+    - cron: "0 15 * * 1-5" # 16:00 Morocco - afternoon digest
+    - cron: "0 9-14 * * 1-5" # hourly intraday - urgent alerts for held stocks only
   workflow_dispatch:
     inputs:
       mode:
         description: "Run mode"
         required: true
-        default: "run-once"
+        default: "morning-digest"
         type: choice
         options:
+          - morning-digest
+          - afternoon-digest
+          - watch-holdings
           - run-once
           - collect
           - analyze
@@ -55,16 +60,20 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.event.schedule }}" == "30 18 * * 1-5" ]]; then
-            echo "mode=daily-summary" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event.schedule }}" == "0 7 * * 1-5" ]]; then
+            echo "mode=morning-digest" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event.schedule }}" == "0 15 * * 1-5" ]]; then
+            echo "mode=afternoon-digest" >> "$GITHUB_OUTPUT"
           else
-            echo "mode=run-once" >> "$GITHUB_OUTPUT"
+            echo "mode=watch-holdings" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Run intelligence platform
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Optional: private holdings as raw JSON so buy prices are never committed.
+          PORTFOLIO_JSON: ${{ secrets.PORTFOLIO_JSON }}
           DATABASE_URL: sqlite:///data/market.db
           LOG_LEVEL: INFO
           HTTP_ALLOW_INSECURE_SOURCE_RETRY: true
