@@ -64,9 +64,9 @@ def main(argv: list[str] | None = None) -> None:
         elif command == "daily-summary":
             run_daily_summary(session)
         elif command == "morning-digest":
-            run_digest(session, "Ouverture (08:00)")
+            run_digest(session, "Matin (10:07)")
         elif command == "afternoon-digest":
-            run_digest(session, "Clôture (16:00)")
+            run_digest(session, "Après-midi (15:07)")
         elif command == "watch-holdings":
             run_watch_holdings(session)
         elif command == "run-once":

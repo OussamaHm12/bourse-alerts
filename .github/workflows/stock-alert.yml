@@ -3,9 +3,10 @@ name: Moroccan Stock Intelligence
 on:
   schedule:
     # Times are UTC. Morocco is UTC+1 (UTC+0 during Ramadan, so labels can drift 1h).
-    - cron: "0 7 * * 1-5" # 08:00 Morocco - morning digest
-    - cron: "0 15 * * 1-5" # 16:00 Morocco - afternoon digest
-    - cron: "0 9-14 * * 1-5" # hourly intraday - urgent alerts for held stocks only
+    # Off-peak minute (:07) to avoid GitHub's top-of-hour scheduling delays.
+    - cron: "7 9 * * 1-5" # 10:07 Morocco - morning digest
+    - cron: "7 14 * * 1-5" # 15:07 Morocco - afternoon digest
+    - cron: "0 10-14 * * 1-5" # hourly intraday - urgent alerts for held stocks only
   workflow_dispatch:
     inputs:
       mode:
@@ -60,9 +61,9 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.event.schedule }}" == "0 7 * * 1-5" ]]; then
+          elif [[ "${{ github.event.schedule }}" == "7 9 * * 1-5" ]]; then
             echo "mode=morning-digest" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.event.schedule }}" == "0 15 * * 1-5" ]]; then
+          elif [[ "${{ github.event.schedule }}" == "7 14 * * 1-5" ]]; then
             echo "mode=afternoon-digest" >> "$GITHUB_OUTPUT"
           else
             echo "mode=watch-holdings" >> "$GITHUB_OUTPUT"

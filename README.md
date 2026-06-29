@@ -12,7 +12,7 @@ This project is for market intelligence and notifications only. It does not plac
 - Computes momentum, moving averages, volatility, volume anomalies, relative performance, support/resistance distance, drawdowns, and 52-week proximity.
 - Scores opportunities from 0 to 100 with component explanations.
 - Collects official Casablanca Bourse announcements and links them to known symbols when possible.
-- Sends exactly two Telegram digests per trading day, at 08:00 and 16:00 Morocco time:
+- Sends exactly two Telegram digests per trading day, at 10:07 and 15:07 Morocco time:
   - your portfolio: current value, net profit/loss after fees, and a SELL/HOLD advice per position
   - a short market summary (top movers and the opportunity of the day)
 - Sends an immediate urgent alert only when a stock you actually own crashes -5% or more intraday.
@@ -186,9 +186,11 @@ python -m moroccan_stock_intelligence.cli run-once
 
 [stock-alert.yml](.github/workflows/stock-alert.yml) runs:
 
-- `07:00 UTC` weekdays (08:00 Morocco): `morning-digest`
-- `15:00 UTC` weekdays (16:00 Morocco): `afternoon-digest`
-- hourly `09:00–14:00 UTC` weekdays: `watch-holdings` (urgent alerts for held stocks only)
+- `09:07 UTC` weekdays (10:07 Morocco): `morning-digest`
+- `14:07 UTC` weekdays (15:07 Morocco): `afternoon-digest`
+- hourly `10:00–14:00 UTC` weekdays: `watch-holdings` (urgent alerts for held stocks only)
+
+The `:07` minute avoids GitHub's heavily contended top-of-hour slot, which reduces scheduling delays.
 - manual `workflow_dispatch` with mode selection
 
 Times are UTC. Morocco is UTC+1 year-round, except UTC+0 during Ramadan, so the labels can drift
