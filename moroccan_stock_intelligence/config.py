@@ -42,5 +42,18 @@ class Settings:
     # Morocco is UTC+1 year-round (UTC+0 during Ramadan). Used only for display labels.
     morocco_utc_offset: int = int(os.getenv("MOROCCO_UTC_OFFSET", "1"))
 
+    # Web app + scheduler.
+    timezone: str = os.getenv("TIMEZONE", "Africa/Casablanca")
+    enable_scheduler: bool = os.getenv("ENABLE_SCHEDULER", "true").lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+
+    # Web Push (VAPID). Generate with: python -m moroccan_stock_intelligence.cli gen-vapid
+    vapid_public_key: str | None = os.getenv("VAPID_PUBLIC_KEY")
+    vapid_private_key: str | None = os.getenv("VAPID_PRIVATE_KEY")
+    vapid_subject: str = os.getenv("VAPID_SUBJECT", "mailto:admin@example.com")
+
 
 settings = Settings()

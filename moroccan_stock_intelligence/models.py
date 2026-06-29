@@ -86,6 +86,17 @@ class Alert(Base):
     sent: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class PushSubscription(Base):
+    __tablename__ = "push_subscriptions"
+    __table_args__ = (UniqueConstraint("endpoint", name="uq_push_endpoint"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    endpoint: Mapped[str] = mapped_column(Text)
+    p256dh: Mapped[str] = mapped_column(String(255))
+    auth: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class News(Base):
     __tablename__ = "news"
     __table_args__ = (UniqueConstraint("url", name="uq_news_url"),)

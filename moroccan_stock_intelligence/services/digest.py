@@ -142,6 +142,24 @@ def _market_section(metrics: list[MetricSet], scores: dict[str, ScoreResult]) ->
     return lines
 
 
+def build_push_payload(
+    period_label: str, holdings: list[HoldingEvaluation]
+) -> tuple[str, str]:
+    """Short (title, body) for a Web Push notification."""
+    title = f"Bourse Casablanca — {period_label}"
+    if not holdings:
+        return title, "Résumé du marché disponible dans l'app"
+    priced = [h for h in holdings if h.net_pl is not None]
+    total_net = sum(h.net_pl for h in priced)
+    to_sell = [h for h in holdings if h.advice == "SELL"]
+    body = f"Portefeuille : P/L net {_signed(total_net, 0)} MAD"
+    if to_sell:
+        body += f" · {len(to_sell)} à VENDRE (" + ", ".join(h.symbol for h in to_sell[:3]) + ")"
+    else:
+        body += " · tout à CONSERVER"
+    return title, body
+
+
 def build_urgent_alert(holding: HoldingEvaluation) -> str:
     lines = [
         f"<b>🚨 ALERTE — {_esc(holding.symbol)}</b>",

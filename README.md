@@ -216,6 +216,46 @@ Pages:
 - News Feed
 - Portfolio Watchlist
 
+## Mobile App (PWA)
+
+A FastAPI server exposes a JSON API and serves an installable Progressive Web App
+([webapp/](webapp/)) with **web-push notifications** and an **in-process scheduler**
+(APScheduler, timezone `Africa/Casablanca`). One always-on process replaces GitHub Actions:
+it collects, analyzes, sends the 10:07 / 15:07 digests and the urgent holding alerts, and
+pushes them to your phone — at the exact time, reliably.
+
+Run locally:
+
+```bash
+python -m moroccan_stock_intelligence.cli gen-vapid   # once: copy the keys into .env
+python -m moroccan_stock_intelligence.cli serve       # http://127.0.0.1:8000
+```
+
+Open `http://127.0.0.1:8000`, tap **Activer** to allow notifications, then **Tester**.
+On a phone, use the browser menu → *Add to Home screen* to install the app icon.
+
+Endpoints:
+
+- `GET /api/overview` — portfolio (value, net P/L, advice) + market summary
+- `GET /api/health`, `GET /api/vapid-public-key`
+- `POST /api/push/subscribe`, `POST /api/push/test`
+
+### Deployment (for notifications on the go)
+
+Web push and PWA install require **HTTPS** in production (`http://localhost` is exempt for dev).
+Deploy the single `webapp` container on any always-on host that gives you HTTPS:
+
+```bash
+docker compose up -d webapp   # serves on :8000 behind your HTTPS reverse proxy
+```
+
+- **Managed (simplest)**: Railway / Fly.io / Render give an `https://…` URL out of the box —
+  push the repo, set the env vars (`VAPID_*`, `TELEGRAM_*`, `PORTFOLIO_JSON`, `TIMEZONE`), done.
+- **VPS / Raspberry Pi**: run the container and put **Caddy** in front for automatic Let's Encrypt
+  HTTPS, or expose it through a **Cloudflare Tunnel**.
+
+Keep `ENABLE_SCHEDULER=true` on exactly one instance so the digests fire once.
+
 ## Docker
 
 Collector:

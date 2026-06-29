@@ -42,7 +42,18 @@ def main(argv: list[str] | None = None) -> None:
     subparsers.add_parser("afternoon-digest")
     subparsers.add_parser("watch-holdings")
     subparsers.add_parser("run-once")
+    subparsers.add_parser("gen-vapid")
+    serve_parser = subparsers.add_parser("serve")
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args(argv)
+
+    if args.command == "gen-vapid":
+        run_gen_vapid()
+        return
+    if args.command == "serve":
+        run_serve(args.host, args.port)
+        return
 
     configure_logging(settings.log_level)
     engine = get_engine()
@@ -130,6 +141,22 @@ def run_watch_holdings(session) -> None:  # noqa: ANN001
         session, portfolio, result["metrics"], result["scores"]  # type: ignore[arg-type]
     )
     LOG.info("watch_holdings_complete urgent_sent=%s", sent)
+
+
+def run_gen_vapid() -> None:
+    from moroccan_stock_intelligence.services.push import generate_vapid_keys
+
+    public, private = generate_vapid_keys()
+    print("Add these to your .env (keep the private key secret):\n")
+    print(f"VAPID_PUBLIC_KEY={public}")
+    print(f"VAPID_PRIVATE_KEY={private}")
+    print("VAPID_SUBJECT=mailto:you@example.com")
+
+
+def run_serve(host: str, port: int) -> None:
+    import uvicorn
+
+    uvicorn.run("moroccan_stock_intelligence.api:app", host=host, port=port, reload=False)
 
 
 if __name__ == "__main__":

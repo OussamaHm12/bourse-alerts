@@ -1,4 +1,15 @@
 services:
+  webapp:
+    build: .
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+    ports:
+      - "8000:8000"
+    command: python -m moroccan_stock_intelligence.cli serve --host 0.0.0.0 --port 8000
+    restart: unless-stopped
+
   collector:
     build: .
     env_file: .env

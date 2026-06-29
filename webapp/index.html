@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0f172a" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <link rel="stylesheet" href="/styles.css" />
+    <title>Bourse Casablanca</title>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="dot"></span>
+        <h1>Bourse Casablanca</h1>
+      </div>
+      <button id="refresh" class="icon-btn" title="Rafraîchir">↻</button>
+    </header>
+
+    <main id="app">
+      <section class="card" id="notif-card">
+        <div class="row between">
+          <div>
+            <strong>Notifications</strong>
+            <p class="muted" id="notif-status">Recevez les digests 10:07 / 15:07 et les alertes.</p>
+          </div>
+          <div class="col">
+            <button id="enable-notif" class="btn">Activer</button>
+            <button id="test-notif" class="btn ghost">Tester</button>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Mon portefeuille</h2>
+        <div class="card" id="portfolio-summary">
+          <p class="muted">Chargement…</p>
+        </div>
+        <div id="holdings"></div>
+      </section>
+
+      <section>
+        <h2>Marché</h2>
+        <div class="grid">
+          <div class="card" id="gainers"><h3>Hausses</h3></div>
+          <div class="card" id="losers"><h3>Baisses</h3></div>
+        </div>
+        <div class="card" id="opportunities"><h3>Opportunités</h3></div>
+      </section>
+
+      <p class="muted small" id="as-of"></p>
+      <p class="muted small">
+        Cours différés ~15 min. Information seulement, ceci n'est pas un conseil en investissement.
+      </p>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
