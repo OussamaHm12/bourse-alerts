@@ -68,6 +68,61 @@ def build_digest(
     return "\n".join(lines)
 
 
+def build_intraday_update(
+    period_label: str,
+    metrics: list[MetricSet],
+    scores: dict[str, ScoreResult],
+    holdings: list[HoldingEvaluation],
+    portfolio: Portfolio,
+) -> str:
+    """Lightweight intraday point: portfolio P/L, opportunities >= recap score, movers."""
+    now = _now_local()
+    lines: list[str] = [
+        f"<b>📊 Bourse de Casablanca — {_esc(period_label)} ({now:%H:%M})</b>",
+        _esc(_date_line(now)),
+        "",
+    ]
+
+    priced = [h for h in holdings if h.net_pl is not None]
+    if priced:
+        total_cost = sum(h.cost_basis for h in priced)
+        total_net = sum(h.net_pl for h in priced)
+        total_pct = (total_net / total_cost * 100) if total_cost else None
+        pl_icon = "🟢" if total_net >= 0 else "🔴"
+        lines.append(
+            f"{pl_icon} Portefeuille : P/L net <b>{_signed(total_net)} MAD "
+            f"({_signed(total_pct, 1)}%)</b>"
+        )
+        to_sell = [h for h in holdings if h.advice == "SELL"]
+        if to_sell:
+            lines.append("🔴 À VENDRE : " + ", ".join(_esc(h.symbol) for h in to_sell))
+    else:
+        lines.append("💼 Aucune position enregistrée.")
+
+    threshold = settings.opportunity_recap_score
+    ranked = sorted(scores.values(), key=lambda s: s.buy_score, reverse=True)
+    qualifying = [s for s in ranked if s.buy_score >= threshold][:5]
+    if qualifying:
+        lines.append(
+            f"🎯 Opportunités ≥ {threshold:.0f} : "
+            + ", ".join(f"{_esc(s.symbol)} {s.buy_score:.0f}" for s in qualifying)
+        )
+
+    movers = [m for m in metrics if m.daily_variation is not None]
+    gainers = sorted(movers, key=lambda m: m.daily_variation or 0, reverse=True)[:3]
+    losers = sorted(movers, key=lambda m: m.daily_variation or 0)[:3]
+    spotlight = gainers + [m for m in losers if m not in gainers]
+    if spotlight:
+        lines.append(
+            "🚀 Bouge aujourd'hui : "
+            + ", ".join(f"{_esc(m.symbol)} {_signed(m.daily_variation, 2)}%" for m in spotlight)
+        )
+
+    lines.append("")
+    lines.append("<i>Point intraday — cours différés ~15 min. Information seulement.</i>")
+    return "\n".join(lines)
+
+
 def _portfolio_section(holdings: list[HoldingEvaluation], portfolio: Portfolio) -> list[str]:
     lines = ["<b>💼 Mon portefeuille</b>"]
     if not holdings:
@@ -119,8 +174,8 @@ def _holding_block(holding: HoldingEvaluation) -> list[str]:
 def _market_section(metrics: list[MetricSet], scores: dict[str, ScoreResult]) -> list[str]:
     lines = ["<b>📈 Marché</b>"]
     movers = [m for m in metrics if m.daily_variation is not None]
-    gainers = sorted(movers, key=lambda m: m.daily_variation or 0, reverse=True)[:3]
-    losers = sorted(movers, key=lambda m: m.daily_variation or 0)[:3]
+    gainers = sorted(movers, key=lambda m: m.daily_variation or 0, reverse=True)[:5]
+    losers = sorted(movers, key=lambda m: m.daily_variation or 0)[:5]
 
     if gainers:
         lines.append(
@@ -133,11 +188,41 @@ def _market_section(metrics: list[MetricSet], scores: dict[str, ScoreResult]) ->
             + ", ".join(f"{_esc(m.symbol)} {_signed(m.daily_variation, 2)}%" for m in losers)
         )
 
-    ranked = sorted(scores.values(), key=lambda s: s.buy_score, reverse=True)
-    top = next((s for s in ranked if s.buy_score >= settings.min_opportunity_score), None)
-    if top is not None:
+    volumes = sorted(
+        [m for m in metrics if m.volume_anomaly is not None],
+        key=lambda m: m.volume_anomaly or 0,
+        reverse=True,
+    )[:5]
+    if volumes:
         lines.append(
-            f"Opportunité du jour : <b>{_esc(top.symbol)}</b> (score {top.buy_score:.0f}/100)"
+            "Volumes inhabituels : "
+            + ", ".join(f"{_esc(m.symbol)} {m.volume_anomaly:.1f}x" for m in volumes)
+        )
+
+    lines.extend(_opportunities_section(scores))
+    return lines
+
+
+def _opportunities_section(scores: dict[str, ScoreResult]) -> list[str]:
+    """BUY-score recap: the detailed top pick plus the Top 5 above the recap threshold."""
+    threshold = settings.opportunity_recap_score
+    ranked = sorted(scores.values(), key=lambda s: s.buy_score, reverse=True)
+    qualifying = [s for s in ranked if s.buy_score >= threshold]
+
+    lines = ["", f"<b>🎯 Opportunités (score ≥ {threshold:.0f}/100)</b>"]
+    if not qualifying:
+        lines.append(f"Aucune opportunité au-dessus de {threshold:.0f}/100 aujourd'hui.")
+        return lines
+
+    top = qualifying[0]
+    lines.append(f"🥇 <b>{_esc(top.symbol)}</b> — score {top.buy_score:.0f}/100")
+    lines.extend(f"   • {_esc(reason)}" for reason in top.reasons[:3])
+    if top.risks:
+        lines.append(f"   ⚠️ {_esc(top.risks[0])}")
+    if len(qualifying) > 1:
+        lines.append(
+            "Top 5 : "
+            + ", ".join(f"{_esc(s.symbol)} {s.buy_score:.0f}" for s in qualifying[:5])
         )
     return lines
 

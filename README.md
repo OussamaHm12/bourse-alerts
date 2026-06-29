@@ -12,9 +12,11 @@ This project is for market intelligence and notifications only. It does not plac
 - Computes momentum, moving averages, volatility, volume anomalies, relative performance, support/resistance distance, drawdowns, and 52-week proximity.
 - Scores opportunities from 0 to 100 with component explanations.
 - Collects official Casablanca Bourse announcements and links them to known symbols when possible.
-- Sends exactly two Telegram digests per trading day, at 10:07 and 15:07 Morocco time:
+- Sends two full Telegram digests per trading day, at 10:00 and 16:00 Morocco time:
   - your portfolio: current value, net profit/loss after fees, and a SELL/HOLD advice per position
-  - a short market summary (top movers and the opportunity of the day)
+  - a market recap: top movers, unusual volume, and the BUY-score opportunities (top pick detailed + Top 5 with score >= 60)
+- Sends a lightweight intraday update every 2 hours during the session (12:00 and 14:00 Morocco):
+  portfolio P/L, opportunities scoring >= 60, and the day's movers.
 - Sends an immediate urgent alert only when a stock you actually own crashes -5% or more intraday.
 - Tracks your real holdings (quantity + buy price) and tells you the net gain if you sell now.
 - Provides a Streamlit dashboard.
@@ -186,11 +188,12 @@ python -m moroccan_stock_intelligence.cli run-once
 
 [stock-alert.yml](.github/workflows/stock-alert.yml) runs:
 
-- `09:07 UTC` weekdays (10:07 Morocco): `morning-digest`
-- `14:07 UTC` weekdays (15:07 Morocco): `afternoon-digest`
-- hourly `10:00–14:00 UTC` weekdays: `watch-holdings` (urgent alerts for held stocks only)
+- `09:00 UTC` weekdays (10:00 Morocco): `morning-digest`
+- `15:00 UTC` weekdays (16:00 Morocco): `afternoon-digest` (closing digest)
+- `11:00 & 13:00 UTC` weekdays (12:00 & 14:00 Morocco): `intraday-update` (lightweight point + crash safety net)
 
-The `:07` minute avoids GitHub's heavily contended top-of-hour slot, which reduces scheduling delays.
+GitHub may delay top-of-hour scheduled runs by a few minutes under load, so the actual delivery
+can land a little after the labelled time. The in-process scheduler (PWA) fires at the exact time.
 - manual `workflow_dispatch` with mode selection
 
 Times are UTC. Morocco is UTC+1 year-round, except UTC+0 during Ramadan, so the labels can drift
@@ -221,8 +224,8 @@ Pages:
 A FastAPI server exposes a JSON API and serves an installable Progressive Web App
 ([webapp/](webapp/)) with **web-push notifications** and an **in-process scheduler**
 (APScheduler, timezone `Africa/Casablanca`). One always-on process replaces GitHub Actions:
-it collects, analyzes, sends the 10:07 / 15:07 digests and the urgent holding alerts, and
-pushes them to your phone — at the exact time, reliably.
+it collects, analyzes, sends the 10:00 / 16:00 digests, the 12:00 / 14:00 intraday updates, and
+the urgent holding alerts, and pushes them to your phone — at the exact time, reliably.
 
 Run locally:
 

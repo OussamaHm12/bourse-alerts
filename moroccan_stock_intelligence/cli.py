@@ -21,7 +21,7 @@ from moroccan_stock_intelligence.services.collector import (
     collect_market_snapshots,
     persist_snapshots,
 )
-from moroccan_stock_intelligence.services.digest import build_digest
+from moroccan_stock_intelligence.services.digest import build_digest, build_intraday_update
 from moroccan_stock_intelligence.services.news import collect_news
 from moroccan_stock_intelligence.services.portfolio import evaluate_portfolio, load_portfolio
 from moroccan_stock_intelligence.services.scoring import score_opportunity
@@ -40,6 +40,7 @@ def main(argv: list[str] | None = None) -> None:
     subparsers.add_parser("daily-summary")
     subparsers.add_parser("morning-digest")
     subparsers.add_parser("afternoon-digest")
+    subparsers.add_parser("intraday-update")
     subparsers.add_parser("watch-holdings")
     subparsers.add_parser("run-once")
     subparsers.add_parser("gen-vapid")
@@ -75,9 +76,11 @@ def main(argv: list[str] | None = None) -> None:
         elif command == "daily-summary":
             run_daily_summary(session)
         elif command == "morning-digest":
-            run_digest(session, "Matin (10:07)")
+            run_digest(session, "Matin (10:00)")
         elif command == "afternoon-digest":
-            run_digest(session, "Après-midi (15:07)")
+            run_digest(session, "Clôture (16:00)")
+        elif command == "intraday-update":
+            run_intraday_update(session, "Point intraday")
         elif command == "watch-holdings":
             run_watch_holdings(session)
         elif command == "run-once":
@@ -130,6 +133,22 @@ def run_digest(session, period_label: str) -> None:  # noqa: ANN001
     message = build_digest(period_label, metrics, scores, holdings, portfolio)  # type: ignore[arg-type]
     send_telegram_message(message, parse_mode="HTML")
     LOG.info("digest_sent period=%s holdings=%s", period_label, len(holdings))
+
+
+def run_intraday_update(session, period_label: str) -> None:  # noqa: ANN001
+    """Lightweight intraday point (every 2h during the session) + crash safety net."""
+    snapshots = collect_market_snapshots()
+    persist_snapshots(session, snapshots)
+    result = run_analysis(session)
+    metrics = result["metrics"]
+    scores = result["scores"]
+    portfolio = load_portfolio()
+    metrics_by_symbol = {metric.symbol: metric for metric in metrics}  # type: ignore[union-attr]
+    holdings = evaluate_portfolio(portfolio, metrics_by_symbol, scores)  # type: ignore[arg-type]
+    dispatch_urgent_holding_alerts(session, portfolio, metrics, scores)  # type: ignore[arg-type]
+    message = build_intraday_update(period_label, metrics, scores, holdings, portfolio)  # type: ignore[arg-type]
+    send_telegram_message(message, parse_mode="HTML")
+    LOG.info("intraday_update_sent period=%s holdings=%s", period_label, len(holdings))
 
 
 def run_watch_holdings(session) -> None:  # noqa: ANN001

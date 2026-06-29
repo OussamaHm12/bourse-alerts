@@ -23,6 +23,10 @@ class Settings:
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     watchlist_file: Path = Path(os.getenv("WATCHLIST_FILE", "config/watchlist.json"))
     min_opportunity_score: float = float(os.getenv("MIN_OPPORTUNITY_SCORE", "80"))
+    # Lower threshold used only for the BUY-score recap shown in the Telegram/push
+    # digest. Kept below min_opportunity_score so the recap stays informative without
+    # firing individual opportunity alerts.
+    opportunity_recap_score: float = float(os.getenv("OPPORTUNITY_RECAP_SCORE", "60"))
 
     # Portfolio holdings. PORTFOLIO_JSON (raw JSON) takes priority over the file so
     # personal buy prices can be passed as a private secret instead of being committed.
