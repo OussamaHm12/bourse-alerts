@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 
 from sqlalchemy import select
 
@@ -45,8 +46,9 @@ def main(argv: list[str] | None = None) -> None:
     subparsers.add_parser("run-once")
     subparsers.add_parser("gen-vapid")
     serve_parser = subparsers.add_parser("serve")
-    serve_parser.add_argument("--host", default="127.0.0.1")
-    serve_parser.add_argument("--port", type=int, default=8000)
+    serve_parser.add_argument("--host", default=os.getenv("HOST", "127.0.0.1"))
+    # Managed hosts (Railway, Render, Fly) inject the public port via $PORT.
+    serve_parser.add_argument("--port", type=int, default=int(os.getenv("PORT", "8000")))
     args = parser.parse_args(argv)
 
     if args.command == "gen-vapid":

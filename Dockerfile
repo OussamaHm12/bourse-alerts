@@ -14,4 +14,5 @@ RUN mkdir -p data
 EXPOSE 8000
 
 # Default: run the web app (API + PWA + in-process scheduler).
-CMD ["python", "-m", "moroccan_stock_intelligence.cli", "serve", "--host", "0.0.0.0", "--port", "8000"]
+# Port comes from $PORT when the host injects one (Railway/Render/Fly), else 8000.
+CMD ["python", "-m", "moroccan_stock_intelligence.cli", "serve", "--host", "0.0.0.0"]

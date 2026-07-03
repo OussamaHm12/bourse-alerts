@@ -1,0 +1,41 @@
+# Render Blueprint — one web service that runs the API + PWA + in-process scheduler.
+# Deploy: push this repo, then on render.com → New → Blueprint → pick this repo.
+# Fill the secret env vars (marked sync:false) in the dashboard after the first deploy.
+#
+# NOTE: the scheduler (10:00/12:00/14:00/16:00 notifications) needs an always-on
+# instance. Render's Free plan sleeps after ~15 min idle, which would skip those
+# jobs — use the Starter plan (or keep the GitHub Actions Telegram path for the
+# guaranteed schedule and use the PWA just for viewing).
+services:
+  - type: web
+    name: bourse-alerts
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter # always-on; "free" sleeps and would skip scheduled pushes
+    healthCheckPath: /api/health
+    autoDeploy: true
+    disk:
+      name: market-data
+      mountPath: /app/data # persists data/market.db across deploys (SQLite lives here)
+      sizeGB: 1
+    envVars:
+      - key: ENABLE_SCHEDULER
+        value: "true"
+      - key: TIMEZONE
+        value: Africa/Casablanca
+      - key: HTTP_ALLOW_INSECURE_SOURCE_RETRY
+        value: "true"
+      # --- secrets: set these in the Render dashboard (never committed) ---
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: VAPID_SUBJECT
+        sync: false
+      - key: PORTFOLIO_JSON # config/portfolio.json is gitignored; pass it here as one-line JSON
+        sync: false
+      # --- optional: also send the Telegram digests from this server ---
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
