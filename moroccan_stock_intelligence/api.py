@@ -4,13 +4,13 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 
 from moroccan_stock_intelligence.config import settings
 from moroccan_stock_intelligence.db import get_engine, get_session_factory, init_db
 from moroccan_stock_intelligence.logging_config import configure_logging
-from moroccan_stock_intelligence.scheduler import build_scheduler
+from moroccan_stock_intelligence.scheduler import build_scheduler, run_update_now
 from moroccan_stock_intelligence.services.push import save_subscription, send_push_to_all
 from moroccan_stock_intelligence.services.views import overview_payload
 
@@ -71,6 +71,17 @@ def push_test() -> dict:
             session, "Bourse Casablanca", "Notification de test ✅", "/"
         )
     return {"sent": count}
+
+
+@app.post("/api/run-now")
+async def run_now(background_tasks: BackgroundTasks) -> dict:
+    """Manually trigger a collect + analyze + notify run (works any day, weekends included).
+
+    Runs in the background so the request returns immediately; the push arrives and
+    the overview refreshes once the ~30s collection completes.
+    """
+    background_tasks.add_task(run_update_now, SessionFactory, "Manuel (bouton)")
+    return {"queued": True}
 
 
 # The PWA static files are mounted last so the API routes above take priority.

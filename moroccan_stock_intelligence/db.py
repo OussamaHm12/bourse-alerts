@@ -20,7 +20,11 @@ def ensure_sqlite_parent(database_url: str) -> None:
 def get_engine(database_url: str | None = None) -> Engine:
     url = database_url or settings.database_url
     ensure_sqlite_parent(url)
-    connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
+    # timeout lets a writer wait for a concurrent lock instead of failing instantly
+    # (scheduled jobs and the manual /api/run-now trigger can overlap on SQLite).
+    connect_args = (
+        {"check_same_thread": False, "timeout": 30} if url.startswith("sqlite") else {}
+    )
     return create_engine(url, future=True, pool_pre_ping=True, connect_args=connect_args)
 
 

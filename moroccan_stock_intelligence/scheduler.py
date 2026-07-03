@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from sqlalchemy import func, select
 
 from moroccan_stock_intelligence.config import settings
+from moroccan_stock_intelligence.models import Price
 from moroccan_stock_intelligence.services.alerts import dispatch_urgent_holding_alerts
 from moroccan_stock_intelligence.services.collector import (
     collect_market_snapshots,
@@ -70,30 +74,74 @@ def _intraday_job(session_factory, period_label: str) -> None:  # noqa: ANN001
             LOG.exception("intraday_job_failed period=%s", period_label)
 
 
+def _bootstrap_job(session_factory) -> None:  # noqa: ANN001
+    """Seed the DB once at startup if it has no price history yet.
+
+    A fresh deploy or a newly mounted volume starts with an empty database, so the
+    web app would show nothing until the next scheduled collection (which is
+    Mon-Fri only). This one-off job populates prices + signals right after boot so
+    the app has data immediately, without waiting for a market-hours slot.
+    """
+    from moroccan_stock_intelligence.cli import run_analysis
+
+    with session_factory() as session:
+        try:
+            existing = session.scalar(select(func.count()).select_from(Price))
+            if existing:
+                LOG.info("bootstrap_skipped existing_prices=%s", existing)
+                return
+            persist_snapshots(session, collect_market_snapshots())
+            run_analysis(session)
+            LOG.info("bootstrap_done prices_seeded=true")
+        except Exception:  # noqa: BLE001 - a scheduled job must never crash the scheduler.
+            LOG.exception("bootstrap_job_failed")
+
+
 def build_scheduler(session_factory) -> BackgroundScheduler:  # noqa: ANN001
     scheduler = BackgroundScheduler(timezone=settings.timezone)
     scheduler.add_job(
+        _bootstrap_job,
+        "date",
+        run_date=datetime.now(ZoneInfo(settings.timezone)) + timedelta(seconds=8),
+        args=[session_factory],
+        id="bootstrap",
+        replace_existing=True,
+    )
+    # Every 2h on weekdays (09:00 -> 17:00). Full digests bookend the day at open
+    # and close; lighter intraday updates fill the slots in between.
+    scheduler.add_job(
         _digest_job,
-        CronTrigger(day_of_week="mon-fri", hour=10, minute=0, timezone=settings.timezone),
-        args=[session_factory, "Matin (10:00)"],
+        CronTrigger(day_of_week="mon-fri", hour=9, minute=0, timezone=settings.timezone),
+        args=[session_factory, "Ouverture (09:00)"],
         id="morning_digest",
         misfire_grace_time=3600,
         replace_existing=True,
     )
     scheduler.add_job(
         _digest_job,
-        CronTrigger(day_of_week="mon-fri", hour=16, minute=0, timezone=settings.timezone),
-        args=[session_factory, "Clôture (16:00)"],
-        id="afternoon_digest",
+        CronTrigger(day_of_week="mon-fri", hour=17, minute=0, timezone=settings.timezone),
+        args=[session_factory, "Clôture (17:00)"],
+        id="closing_digest",
         misfire_grace_time=3600,
         replace_existing=True,
     )
     scheduler.add_job(
         _intraday_job,
-        CronTrigger(day_of_week="mon-fri", hour="12,14", minute=0, timezone=settings.timezone),
+        CronTrigger(
+            day_of_week="mon-fri", hour="11,13,15", minute=0, timezone=settings.timezone
+        ),
         args=[session_factory, "Point intraday"],
         id="intraday_update",
-        misfire_grace_time=600,
+        misfire_grace_time=1800,
         replace_existing=True,
     )
     return scheduler
+
+
+def run_update_now(session_factory, label: str = "Mise à jour manuelle") -> None:  # noqa: ANN001
+    """On-demand collect + analyze + notify, triggered by the app's manual button.
+
+    Reuses the full digest path so a manual run behaves like a scheduled one
+    (works any day, including weekends) and pushes the result to subscribers.
+    """
+    _digest_job(session_factory, label)

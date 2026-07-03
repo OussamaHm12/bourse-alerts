@@ -114,9 +114,30 @@ async function testNotification() {
     sent > 0 ? `Test envoyé à ${sent} appareil(s).` : "Aucun appareil abonné (activez d'abord).";
 }
 
+async function runNow() {
+  const btn = document.getElementById("run-now");
+  const status = document.getElementById("notif-status");
+  btn.disabled = true;
+  status.textContent = "⏳ Collecte des cours en cours… (~30 s)";
+  try {
+    const res = await fetch("/api/run-now", { method: "POST" });
+    if (!res.ok) throw new Error("API " + res.status);
+    // The run is async on the server; give it time, then refresh the view.
+    setTimeout(async () => {
+      await loadOverview().catch(console.error);
+      status.textContent = "✅ Données actualisées. Notification envoyée si abonné.";
+      btn.disabled = false;
+    }, 33000);
+  } catch (e) {
+    status.textContent = "Erreur : " + e.message;
+    btn.disabled = false;
+  }
+}
+
 document.getElementById("refresh").addEventListener("click", () => loadOverview().catch(console.error));
 document.getElementById("enable-notif").addEventListener("click", enableNotifications);
 document.getElementById("test-notif").addEventListener("click", testNotification);
+document.getElementById("run-now").addEventListener("click", runNow);
 
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/service-worker.js").catch(console.error);

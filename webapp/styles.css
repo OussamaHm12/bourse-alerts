@@ -71,6 +71,7 @@ h3 { margin: 0 0 0.5rem; font-size: 0.95rem; }
   font-size: 0.85rem;
 }
 .btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+.btn.full { width: 100%; margin-top: 0.75rem; }
 .btn:disabled { opacity: 0.5; }
 .icon-btn { background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 10px; width: 38px; height: 38px; font-size: 1.1rem; }
 
