@@ -141,6 +141,14 @@ document.getElementById("run-now").addEventListener("click", runNow);
 
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/service-worker.js").catch(console.error);
+  // Reload once when a new service worker takes control, so a fresh deploy's UI
+  // (e.g. new buttons) appears without the user manually clearing the cache.
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (refreshing) return;
+    refreshing = true;
+    location.reload();
+  });
 }
 
 loadOverview().catch((e) => {

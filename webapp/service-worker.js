@@ -1,4 +1,4 @@
-const CACHE = "bourse-v1";
+const CACHE = "bourse-v2";
 const ASSETS = [
   "/",
   "/index.html",
@@ -23,10 +23,21 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+// Network-first for the app shell so a new deploy shows up immediately; the cache
+// is only a fallback when offline. (The API is never intercepted.)
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (url.pathname.startsWith("/api/")) return; // API is always live
-  event.respondWith(caches.match(event.request).then((r) => r || fetch(event.request)));
+  if (event.request.method !== "GET") return;
+  event.respondWith(
+    fetch(event.request)
+      .then((res) => {
+        const copy = res.clone();
+        caches.open(CACHE).then((c) => c.put(event.request, copy)).catch(() => {});
+        return res;
+      })
+      .catch(() => caches.match(event.request))
+  );
 });
 
 self.addEventListener("push", (event) => {
