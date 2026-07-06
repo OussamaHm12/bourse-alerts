@@ -1,0 +1,21 @@
+name: bourse_casablanca
+description: "Bourse Casablanca"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.12.0
+
+# No hosted (pub.dev) dependencies on purpose: the build network blocks pub.dev
+# via TLS interception, so we resolve offline using only SDK packages and use
+# dart:html for HTTP instead of package:http.
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true

@@ -1,0 +1,2 @@
+# flutter_lints is a pub.dev package and the build network blocks pub.dev, so we
+# keep analysis options empty (linting is not needed for the web build).

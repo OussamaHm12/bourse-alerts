@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -23,7 +24,20 @@ from moroccan_stock_intelligence.services.views import (
 
 LOG = logging.getLogger(__name__)
 
-WEBAPP_DIR = Path(__file__).resolve().parent.parent / "webapp"
+def _resolve_webapp_dir() -> Path:
+    """Serve the Flutter web build when present, else the legacy static PWA.
+
+    WEBAPP_DIR env var overrides both (used for local testing of a Flutter build).
+    """
+    override = os.getenv("WEBAPP_DIR")
+    if override:
+        return Path(override)
+    root = Path(__file__).resolve().parent.parent
+    flutter = root / "webapp_flutter"
+    return flutter if flutter.exists() else root / "webapp"
+
+
+WEBAPP_DIR = _resolve_webapp_dir()
 
 configure_logging(settings.log_level)
 engine = get_engine()

@@ -8,3 +8,10 @@ data/
 .ruff_cache/
 .venv/
 *.pyc
+
+# Flutter build artifacts (the web app is compiled in the Docker build stage)
+flutter_app/build/
+flutter_app/.dart_tool/
+flutter_app/.flutter-plugins
+flutter_app/.flutter-plugins-dependencies
+webapp_flutter/
