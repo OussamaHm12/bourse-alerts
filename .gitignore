@@ -9,9 +9,8 @@ data/
 .venv/
 *.pyc
 
-# Flutter build artifacts (the web app is compiled in the Docker build stage)
+# Flutter intermediate build artifacts (the shipped output lives in webapp_flutter/)
 flutter_app/build/
 flutter_app/.dart_tool/
 flutter_app/.flutter-plugins
 flutter_app/.flutter-plugins-dependencies
-webapp_flutter/
