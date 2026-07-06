@@ -82,7 +82,7 @@ def _bootstrap_job(session_factory) -> None:  # noqa: ANN001
     Mon-Fri only). This one-off job populates prices + signals right after boot so
     the app has data immediately, without waiting for a market-hours slot.
     """
-    from moroccan_stock_intelligence.cli import run_analysis
+    from moroccan_stock_intelligence.cli import run_analysis, run_news
 
     with session_factory() as session:
         try:
@@ -92,6 +92,10 @@ def _bootstrap_job(session_factory) -> None:  # noqa: ANN001
                 return
             persist_snapshots(session, collect_market_snapshots())
             run_analysis(session)
+            try:  # news is best-effort; never let it block the price seeding
+                run_news(session)
+            except Exception:  # noqa: BLE001
+                LOG.exception("bootstrap_news_failed")
             LOG.info("bootstrap_done prices_seeded=true")
         except Exception:  # noqa: BLE001 - a scheduled job must never crash the scheduler.
             LOG.exception("bootstrap_job_failed")

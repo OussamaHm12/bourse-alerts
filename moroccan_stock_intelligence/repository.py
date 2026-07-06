@@ -116,6 +116,43 @@ def store_news(session: Session, item: NewsItem, stock_id: int | None) -> None:
     )
 
 
+def load_symbol_history(
+    session: Session, symbol: str, limit: int = 180
+) -> list[tuple[datetime, float]]:
+    """Return the most recent (observed_at, price) points for one symbol, oldest first."""
+    rows = session.execute(
+        select(Price.observed_at, Price.current_price)
+        .join(Stock, Price.stock_id == Stock.id)
+        .where(Stock.symbol == symbol.upper(), Price.current_price.is_not(None))
+        .order_by(Price.observed_at.desc())
+        .limit(limit)
+    ).all()
+    points = [(row[0], float(row[1])) for row in rows]
+    points.reverse()
+    return points
+
+
+def load_recent_news(
+    session: Session, limit: int = 30, symbol: str | None = None
+) -> list[tuple[News, str | None]]:
+    """Return recent news joined to their stock symbol (None if unlinked)."""
+    query = (
+        select(News, Stock.symbol)
+        .join(Stock, News.stock_id == Stock.id, isouter=True)
+        .order_by(News.collected_at.desc())
+        .limit(limit)
+    )
+    if symbol is not None:
+        query = (
+            select(News, Stock.symbol)
+            .join(Stock, News.stock_id == Stock.id)
+            .where(Stock.symbol == symbol.upper())
+            .order_by(News.collected_at.desc())
+            .limit(limit)
+        )
+    return [(row[0], row[1]) for row in session.execute(query).all()]
+
+
 def load_price_frame(session: Session) -> pd.DataFrame:
     rows = session.execute(
         select(

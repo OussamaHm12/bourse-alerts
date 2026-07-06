@@ -39,26 +39,26 @@ def score_opportunity(metric: MetricSet, news_sentiment_score: float = 0.0) -> S
     reasons: list[str] = []
     risks: list[str] = []
     if momentum >= 65:
-        reasons.append("Positive multi-period momentum")
+        reasons.append("Momentum positif sur plusieurs périodes")
     if metric.volume_anomaly and metric.volume_anomaly >= 2:
-        reasons.append(f"Volume anomaly at {metric.volume_anomaly:.1f}x recent average")
+        reasons.append(f"Volume anormal à {metric.volume_anomaly:.1f}× la moyenne récente")
     if support >= 70:
-        reasons.append("Trading near recent support")
+        reasons.append("Cours proche d'un support récent")
     if metric.week52_high_proximity is not None and metric.week52_high_proximity > -3:
-        reasons.append("Near 52-week high")
+        reasons.append("Proche du plus haut sur 52 semaines")
     if news_sentiment_score > 0.5:
-        reasons.append("Positive recent news flow")
+        reasons.append("Actualités récentes positives")
 
     if metric.volatility_30d and metric.volatility_30d > 40:
-        risks.append("Elevated recent volatility")
+        risks.append("Volatilité récente élevée")
     if metric.momentum_30d is not None and metric.momentum_30d < -8:
-        risks.append("Weak 30-day momentum")
+        risks.append("Momentum faible sur 30 jours")
     if metric.support_distance is not None and metric.support_distance > 20:
-        risks.append("Far from recent support")
+        risks.append("Éloigné du support récent")
     if not reasons:
-        reasons.append("Neutral setup; not enough strong confirming factors yet")
+        reasons.append("Configuration neutre ; pas encore de facteur fort confirmé")
     if not risks:
-        risks.append("No major technical risk detected from available history")
+        risks.append("Aucun risque technique majeur détecté sur l'historique disponible")
 
     return ScoreResult(
         symbol=metric.symbol,

@@ -237,11 +237,19 @@ python -m moroccan_stock_intelligence.cli serve       # http://127.0.0.1:8000
 Open `http://127.0.0.1:8000`, tap **Activer** to allow notifications, then **Tester**.
 On a phone, use the browser menu → *Add to Home screen* to install the app icon.
 
+The PWA has four tabs — **Portefeuille**, **Marché**, **Opportunités**, **Actus** —
+plus a per-stock detail sheet (price sparkline, score breakdown with reasons/risks,
+technical indicators, linked news) and a manual "run now" button.
+
 Endpoints:
 
 - `GET /api/overview` — portfolio (value, net P/L, advice) + market summary
+- `GET /api/stocks?sort=&sector=&q=` — full market table with scores and labels
+- `GET /api/stock/{symbol}` — full detail: metrics, score breakdown, history, news
+- `GET /api/opportunities?min_score=` — ranked BUY-score opportunities
+- `GET /api/news`, `GET /api/sectors`
 - `GET /api/health`, `GET /api/vapid-public-key`
-- `POST /api/push/subscribe`, `POST /api/push/test`
+- `POST /api/push/subscribe`, `POST /api/push/test`, `POST /api/run-now`
 
 ### Deployment (for notifications on the go)
 

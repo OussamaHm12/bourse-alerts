@@ -19,42 +19,86 @@
     </header>
 
     <main id="app">
-      <section class="card" id="notif-card">
-        <div class="row between">
-          <div>
-            <strong>Notifications</strong>
-            <p class="muted" id="notif-status">Mises à jour toutes les 2h (9h–17h, du lundi au vendredi) et alertes.</p>
+      <!-- ============================ PORTEFEUILLE ============================ -->
+      <section class="view active" id="view-portfolio">
+        <div class="card" id="notif-card">
+          <div class="row between">
+            <div>
+              <strong>Notifications</strong>
+              <p class="muted small" id="notif-status">Mises à jour toutes les 2h (9h–17h, jours ouvrés) et alertes.</p>
+            </div>
+            <div class="col">
+              <button id="enable-notif" class="btn">Activer</button>
+              <button id="test-notif" class="btn ghost">Tester</button>
+            </div>
           </div>
-          <div class="col">
-            <button id="enable-notif" class="btn">Activer</button>
-            <button id="test-notif" class="btn ghost">Tester</button>
-          </div>
+          <button id="run-now" class="btn full">↻ Lancer une mise à jour maintenant</button>
         </div>
-        <button id="run-now" class="btn full">↻ Lancer une mise à jour maintenant</button>
-      </section>
 
-      <section>
         <h2>Mon portefeuille</h2>
-        <div class="card" id="portfolio-summary">
-          <p class="muted">Chargement…</p>
-        </div>
+        <div class="card" id="portfolio-summary"><p class="muted">Chargement…</p></div>
         <div id="holdings"></div>
       </section>
 
-      <section>
+      <!-- ============================== MARCHÉ =============================== -->
+      <section class="view" id="view-market">
         <h2>Marché</h2>
-        <div class="grid">
-          <div class="card" id="gainers"><h3>Hausses</h3></div>
-          <div class="card" id="losers"><h3>Baisses</h3></div>
+        <div class="controls">
+          <input id="market-search" class="input" type="search" placeholder="Rechercher une action…" aria-label="Rechercher une action" />
+          <select id="market-sort" class="input select" aria-label="Trier les actions">
+            <option value="score">Trier : Score</option>
+            <option value="variation">Trier : Variation</option>
+            <option value="volume">Trier : Volume anormal</option>
+            <option value="name">Trier : Nom</option>
+          </select>
         </div>
-        <div class="card" id="opportunities"><h3>Opportunités</h3></div>
+        <div id="sectors-strip" class="chips scroll"></div>
+        <div id="market-list"><p class="muted">Chargement…</p></div>
       </section>
 
-      <p class="muted small" id="as-of"></p>
-      <p class="muted small">
+      <!-- =========================== OPPORTUNITÉS =========================== -->
+      <section class="view" id="view-opps">
+        <h2>Opportunités</h2>
+        <div id="opp-filters" class="chips">
+          <button class="chip active" data-min="0">Toutes</button>
+          <button class="chip" data-min="50">≥ 50</button>
+          <button class="chip" data-min="60">≥ 60</button>
+          <button class="chip" data-min="70">≥ 70</button>
+        </div>
+        <div id="opp-list"><p class="muted">Chargement…</p></div>
+      </section>
+
+      <!-- =============================== ACTUS ============================== -->
+      <section class="view" id="view-news">
+        <h2>Actualités</h2>
+        <div id="news-list"><p class="muted">Chargement…</p></div>
+      </section>
+
+      <p class="muted small disclaimer">
         Cours différés ~15 min. Information seulement, ceci n'est pas un conseil en investissement.
       </p>
+      <p class="muted small" id="as-of"></p>
     </main>
+
+    <!-- ============================ FICHE DÉTAIL =========================== -->
+    <div id="detail" class="sheet">
+      <div class="sheet-inner">
+        <div class="sheet-head">
+          <button id="detail-back" class="icon-btn">←</button>
+          <div id="detail-title"></div>
+          <span style="width: 38px"></span>
+        </div>
+        <div id="detail-body"><p class="muted">Chargement…</p></div>
+      </div>
+    </div>
+
+    <!-- ============================= NAV BAS ============================== -->
+    <nav class="tabbar">
+      <button class="tab active" data-view="view-portfolio"><span>💼</span>Portefeuille</button>
+      <button class="tab" data-view="view-market"><span>📊</span>Marché</button>
+      <button class="tab" data-view="view-opps"><span>🎯</span>Opportunités</button>
+      <button class="tab" data-view="view-news"><span>📰</span>Actus</button>
+    </nav>
 
     <script src="/app.js"></script>
   </body>

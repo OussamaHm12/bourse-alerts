@@ -4,7 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 
 from moroccan_stock_intelligence.config import settings
@@ -12,7 +12,14 @@ from moroccan_stock_intelligence.db import get_engine, get_session_factory, init
 from moroccan_stock_intelligence.logging_config import configure_logging
 from moroccan_stock_intelligence.scheduler import build_scheduler, run_update_now
 from moroccan_stock_intelligence.services.push import save_subscription, send_push_to_all
-from moroccan_stock_intelligence.services.views import overview_payload
+from moroccan_stock_intelligence.services.views import (
+    news_payload,
+    opportunities_payload,
+    overview_payload,
+    sectors_payload,
+    stock_detail_payload,
+    stocks_payload,
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -48,6 +55,39 @@ def health() -> dict:
 def overview() -> dict:
     with SessionFactory() as session:
         return overview_payload(session)
+
+
+@app.get("/api/stocks")
+def stocks(sort: str = "score", sector: str | None = None, q: str | None = None) -> dict:
+    with SessionFactory() as session:
+        return stocks_payload(session, sort=sort, sector=sector, query=q)
+
+
+@app.get("/api/stock/{symbol}")
+def stock_detail(symbol: str) -> dict:
+    with SessionFactory() as session:
+        payload = stock_detail_payload(session, symbol)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="symbol not found")
+    return payload
+
+
+@app.get("/api/opportunities")
+def opportunities(min_score: float = 50.0) -> dict:
+    with SessionFactory() as session:
+        return opportunities_payload(session, min_score=min_score)
+
+
+@app.get("/api/news")
+def news(limit: int = 30) -> dict:
+    with SessionFactory() as session:
+        return news_payload(session, limit=limit)
+
+
+@app.get("/api/sectors")
+def sectors() -> dict:
+    with SessionFactory() as session:
+        return sectors_payload(session)
 
 
 @app.get("/api/vapid-public-key")
