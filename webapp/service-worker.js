@@ -1,9 +1,9 @@
-const CACHE = "bourse-v3";
+const CACHE = "bourse-v4";
 const ASSETS = [
   "/",
   "/index.html",
-  "/styles.css",
-  "/app.js",
+  "/styles.css?v=3",
+  "/app.js?v=3",
   "/manifest.webmanifest",
   "/icons/icon-192.png",
 ];
