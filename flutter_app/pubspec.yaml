@@ -6,12 +6,11 @@ version: 1.0.0+1
 environment:
   sdk: ^3.12.0
 
-# No hosted (pub.dev) dependencies on purpose: the build network blocks pub.dev
-# via TLS interception, so we resolve offline using only SDK packages and use
-# dart:html for HTTP instead of package:http.
 dependencies:
   flutter:
     sdk: flutter
+  fl_chart: ^0.69.0
+  flutter_animate: ^4.5.0
 
 dev_dependencies:
   flutter_test:
