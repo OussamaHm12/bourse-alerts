@@ -62,6 +62,22 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Moroccan Stock Intelligence", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def _revalidate_app_shell(request: Request, call_next):
+    """Force the browser to revalidate the app shell so new deploys load reliably.
+
+    The Flutter files keep the same names across builds (index.html, main.dart.js,
+    flutter_bootstrap.js). Without this, browsers heuristically serve a stale
+    cached copy and never show a new version. "no-cache" still allows caching but
+    requires an ETag revalidation, so unchanged files return a fast 304.
+    """
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.endswith((".html", ".js", ".json", ".webmanifest")):
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok", "scheduler": settings.enable_scheduler}
