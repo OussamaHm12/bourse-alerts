@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import re
 from datetime import datetime, timedelta, timezone
 
 from moroccan_stock_intelligence.config import settings
@@ -243,6 +244,11 @@ def build_push_payload(
     else:
         body += " · tout à CONSERVER"
     return title, body
+
+
+def html_to_text(message: str) -> str:
+    """Strip the Telegram HTML formatting so the same content is readable in-app."""
+    return html.unescape(re.sub(r"<[^>]+>", "", message)).strip()
 
 
 def build_urgent_alert(holding: HoldingEvaluation) -> str:

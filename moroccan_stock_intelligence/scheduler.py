@@ -15,10 +15,12 @@ from moroccan_stock_intelligence.services.collector import (
     collect_market_snapshots,
     persist_snapshots,
 )
+from moroccan_stock_intelligence.repository import save_notification
 from moroccan_stock_intelligence.services.digest import (
     build_digest,
     build_intraday_update,
     build_push_payload,
+    html_to_text,
 )
 from moroccan_stock_intelligence.services.portfolio import evaluate_portfolio, load_portfolio
 from moroccan_stock_intelligence.services.push import send_push_to_all
@@ -41,6 +43,7 @@ def _digest_job(session_factory, period_label: str) -> None:  # noqa: ANN001
             holdings = evaluate_portfolio(portfolio, metrics_by_symbol, scores)
 
             message = build_digest(period_label, metrics, scores, holdings, portfolio)
+            save_notification(session, "digest", period_label, html_to_text(message))
             send_telegram_message(message, parse_mode="HTML")
             title, body = build_push_payload(period_label, holdings)
             send_push_to_all(session, title, body, "/")
@@ -66,6 +69,7 @@ def _intraday_job(session_factory, period_label: str) -> None:  # noqa: ANN001
             dispatch_urgent_holding_alerts(session, portfolio, metrics, scores)
 
             message = build_intraday_update(period_label, metrics, scores, holdings, portfolio)
+            save_notification(session, "intraday", period_label, html_to_text(message))
             send_telegram_message(message, parse_mode="HTML")
             title, body = build_push_payload(period_label, holdings)
             send_push_to_all(session, title, body, "/")

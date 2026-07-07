@@ -130,7 +130,7 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _idx = 0;
-  final _pages = const [PortfolioPage(), MarketPage(), OppsPage(), NewsPage()];
+  final _pages = const [PortfolioPage(), MarketPage(), OppsPage(), NewsPage(), NotificationsPage()];
 
   @override
   Widget build(BuildContext context) {
@@ -166,12 +166,14 @@ class _HomeShellState extends State<HomeShell> {
         child: NavigationBar(
           selectedIndex: _idx,
           height: 64,
+          labelBehavior: NavigationDestinationLabelBehavior.onlyShowSelected,
           onDestinationSelected: (i) => setState(() => _idx = i),
           destinations: const [
             NavigationDestination(icon: Icon(Icons.account_balance_wallet_outlined), selectedIcon: Icon(Icons.account_balance_wallet), label: 'Portefeuille'),
             NavigationDestination(icon: Icon(Icons.show_chart_outlined), selectedIcon: Icon(Icons.show_chart), label: 'Marché'),
             NavigationDestination(icon: Icon(Icons.bolt_outlined), selectedIcon: Icon(Icons.bolt), label: 'Opportunités'),
             NavigationDestination(icon: Icon(Icons.article_outlined), selectedIcon: Icon(Icons.article), label: 'Actus'),
+            NavigationDestination(icon: Icon(Icons.notifications_outlined), selectedIcon: Icon(Icons.notifications), label: 'Notifs'),
           ],
         ),
       ),
@@ -662,6 +664,104 @@ class _NewsPageState extends State<NewsPage> {
       },
     );
   }
+}
+
+// ---------------------------- notifications ------------------------------- //
+class NotificationsPage extends StatefulWidget {
+  const NotificationsPage({super.key});
+  @override
+  State<NotificationsPage> createState() => _NotificationsPageState();
+}
+
+class _NotificationsPageState extends State<NotificationsPage> {
+  List _items = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    try {
+      final d = await api('api/notifications');
+      setState(() {
+        _items = (d['notifications'] as List?) ?? [];
+        _loading = false;
+      });
+    } catch (_) {
+      setState(() => _loading = false);
+    }
+  }
+
+  IconData _icon(String kind) => switch (kind) {
+        'digest' => Icons.summarize_outlined,
+        'intraday' => Icons.update,
+        'test' => Icons.check_circle_outline,
+        'urgent' => Icons.warning_amber_rounded,
+        _ => Icons.notifications_outlined,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) return const Center(child: CircularProgressIndicator(color: accent));
+    if (_items.isEmpty) {
+      return RefreshIndicator(
+        onRefresh: _load,
+        color: accent,
+        backgroundColor: surface2,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: const [
+            SizedBox(height: 120),
+            Icon(Icons.notifications_off_outlined, size: 44, color: muted),
+            SizedBox(height: 14),
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: 36),
+              child: Text(
+                "Aucune notification pour l'instant.\nElles arrivent à 9h · 11h · 13h · 15h · 17h (jours ouvrés) — ou appuie sur « Actualiser » dans Portefeuille pour en générer une tout de suite.",
+                textAlign: TextAlign.center,
+                style: TextStyle(color: muted, height: 1.5),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    return RefreshIndicator(
+      onRefresh: _load,
+      color: accent,
+      backgroundColor: surface2,
+      child: ListView.builder(
+        padding: const EdgeInsets.fromLTRB(14, 10, 14, 24),
+        itemCount: _items.length,
+        itemBuilder: (c, i) {
+          final n = _items[i] as Map<String, dynamic>;
+          final when = _fmtDate(DateTime.tryParse('${n['created_at']}')?.toLocal());
+          return glassCard(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Icon(_icon('${n['kind']}'), size: 18, color: accent),
+                const SizedBox(width: 8),
+                Expanded(child: Text(n['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.w700))),
+                Text(when, style: const TextStyle(color: muted, fontSize: 11)),
+              ]),
+              const Divider(color: line, height: 18),
+              Text(n['body'] ?? '', style: const TextStyle(fontSize: 13, height: 1.5)),
+            ]),
+          ).enter(i);
+        },
+      ),
+    );
+  }
+}
+
+String _fmtDate(DateTime? d) {
+  if (d == null) return '';
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${two(d.day)}/${two(d.month)} ${two(d.hour)}:${two(d.minute)}';
 }
 
 // --------------------------- stock detail sheet --------------------------- //

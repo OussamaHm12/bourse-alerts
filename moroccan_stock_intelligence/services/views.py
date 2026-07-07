@@ -9,6 +9,7 @@ from moroccan_stock_intelligence.models import News
 from moroccan_stock_intelligence.repository import (
     load_price_frame,
     load_recent_news,
+    load_recent_notifications,
     load_symbol_history,
 )
 from moroccan_stock_intelligence.services.analytics import MetricSet, compute_metrics
@@ -270,6 +271,21 @@ def opportunities_payload(session: Session, min_score: float = 50.0) -> dict:
 
 def news_payload(session: Session, limit: int = 30) -> dict:
     return {"news": [_news_item(n, s) for n, s in load_recent_news(session, limit=limit)]}
+
+
+def notifications_payload(session: Session, limit: int = 50) -> dict:
+    return {
+        "notifications": [
+            {
+                "id": n.id,
+                "created_at": n.created_at.isoformat() if n.created_at else None,
+                "kind": n.kind,
+                "title": n.title,
+                "body": n.body,
+            }
+            for n in load_recent_notifications(session, limit=limit)
+        ]
+    }
 
 
 def sectors_payload(session: Session) -> dict:

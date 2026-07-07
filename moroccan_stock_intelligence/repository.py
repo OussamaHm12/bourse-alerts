@@ -7,7 +7,14 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from moroccan_stock_intelligence.models import Alert, News, Price, Signal, Stock
+from moroccan_stock_intelligence.models import (
+    Alert,
+    News,
+    Notification,
+    Price,
+    Signal,
+    Stock,
+)
 from moroccan_stock_intelligence.schemas import NewsItem, StockSnapshot
 
 
@@ -113,6 +120,21 @@ def store_news(session: Session, item: NewsItem, stock_id: int | None) -> None:
             sentiment=item.sentiment,
             impact_score=item.impact_score,
         )
+    )
+
+
+def save_notification(session: Session, kind: str, title: str, body: str) -> Notification:
+    """Persist a delivered notification so the app can show a history of them."""
+    notification = Notification(kind=kind, title=title, body=body)
+    session.add(notification)
+    return notification
+
+
+def load_recent_notifications(session: Session, limit: int = 50) -> list[Notification]:
+    return list(
+        session.scalars(
+            select(Notification).order_by(Notification.created_at.desc()).limit(limit)
+        ).all()
     )
 
 

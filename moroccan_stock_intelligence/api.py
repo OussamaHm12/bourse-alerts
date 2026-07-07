@@ -12,9 +12,11 @@ from moroccan_stock_intelligence.config import settings
 from moroccan_stock_intelligence.db import get_engine, get_session_factory, init_db
 from moroccan_stock_intelligence.logging_config import configure_logging
 from moroccan_stock_intelligence.scheduler import build_scheduler, run_update_now
+from moroccan_stock_intelligence.repository import save_notification
 from moroccan_stock_intelligence.services.push import save_subscription, send_push_to_all
 from moroccan_stock_intelligence.services.views import (
     news_payload,
+    notifications_payload,
     opportunities_payload,
     overview_payload,
     sectors_payload,
@@ -98,6 +100,12 @@ def news(limit: int = 30) -> dict:
         return news_payload(session, limit=limit)
 
 
+@app.get("/api/notifications")
+def notifications(limit: int = 50) -> dict:
+    with SessionFactory() as session:
+        return notifications_payload(session, limit=limit)
+
+
 @app.get("/api/sectors")
 def sectors() -> dict:
     with SessionFactory() as session:
@@ -121,6 +129,9 @@ async def push_subscribe(request: Request) -> dict:
 @app.post("/api/push/test")
 def push_test() -> dict:
     with SessionFactory() as session:
+        save_notification(
+            session, "test", "Notification de test", "Ceci est une notification de test ✅"
+        )
         count = send_push_to_all(
             session, "Bourse Casablanca", "Notification de test ✅", "/"
         )
