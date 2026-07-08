@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime
 
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from moroccan_stock_intelligence.models import (
@@ -152,6 +152,22 @@ def load_symbol_history(
     points = [(row[0], float(row[1])) for row in rows]
     points.reverse()
     return points
+
+
+def load_history_depths(session: Session) -> dict[str, int]:
+    """Days of collected price history per symbol (distinct calendar days).
+
+    This is the honest measure of history depth: tail-based metrics such as
+    ma200 return a value even with one snapshot, so the analysis layer uses
+    this count to gate long-window conclusions and to compute confidence.
+    """
+    rows = session.execute(
+        select(Stock.symbol, func.count(func.distinct(func.date(Price.observed_at))))
+        .join(Price, Price.stock_id == Stock.id)
+        .where(Price.current_price.is_not(None))
+        .group_by(Stock.symbol)
+    ).all()
+    return {str(row[0]): int(row[1]) for row in rows}
 
 
 def load_recent_news(
