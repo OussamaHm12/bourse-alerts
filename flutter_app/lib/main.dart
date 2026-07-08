@@ -77,8 +77,8 @@ Color labelColor(String label) => switch (label) {
       _ => muted,
     };
 
-Widget badge(String label) {
-  final c = labelColor(label);
+Widget badge(String label, [Color? color]) {
+  final c = color ?? labelColor(label);
   return Container(
     padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
     decoration: BoxDecoration(
@@ -130,7 +130,7 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _idx = 0;
-  final _pages = const [PortfolioPage(), MarketPage(), OppsPage(), NewsPage(), NotificationsPage()];
+  final _pages = const [PortfolioPage(), MarketPage(), OppsPage(), AnalysisPage(), NewsPage(), NotificationsPage()];
 
   @override
   Widget build(BuildContext context) {
@@ -172,6 +172,7 @@ class _HomeShellState extends State<HomeShell> {
             NavigationDestination(icon: Icon(Icons.account_balance_wallet_outlined), selectedIcon: Icon(Icons.account_balance_wallet), label: 'Portefeuille'),
             NavigationDestination(icon: Icon(Icons.show_chart_outlined), selectedIcon: Icon(Icons.show_chart), label: 'Marché'),
             NavigationDestination(icon: Icon(Icons.bolt_outlined), selectedIcon: Icon(Icons.bolt), label: 'Opportunités'),
+            NavigationDestination(icon: Icon(Icons.psychology_outlined), selectedIcon: Icon(Icons.psychology), label: 'Analyse'),
             NavigationDestination(icon: Icon(Icons.article_outlined), selectedIcon: Icon(Icons.article), label: 'Actus'),
             NavigationDestination(icon: Icon(Icons.notifications_outlined), selectedIcon: Icon(Icons.notifications), label: 'Notifs'),
           ],
@@ -605,6 +606,363 @@ Widget _scoreRing(double score) => SizedBox(
       ]),
     );
 
+// ------------------------------ analyse IA -------------------------------- //
+const _horizonLabels = {'short': 'Court terme', 'medium': 'Moyen terme', 'long': 'Long terme'};
+
+Color recColor(String key) => switch (key) {
+      'STRONG_OPPORTUNITY' => green,
+      'WATCH' => amber,
+      'HOLD' => accent,
+      'TAKE_PROFIT' => amber,
+      'AVOID' || 'RISKY' => red,
+      _ => muted,
+    };
+
+class AnalysisPage extends StatefulWidget {
+  const AnalysisPage({super.key});
+  @override
+  State<AnalysisPage> createState() => _AnalysisPageState();
+}
+
+class _AnalysisPageState extends State<AnalysisPage> {
+  String _horizon = 'short';
+  List _opps = [];
+  List _holdings = [];
+  String? _note;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    try {
+      final results = await Future.wait([
+        api('api/analysis/opportunities?horizon=$_horizon&min_score=0&limit=15'),
+        api('api/analysis/portfolio'),
+      ]);
+      final pf = results[1] as Map<String, dynamic>;
+      setState(() {
+        _opps = (results[0]['opportunities'] as List?) ?? [];
+        _holdings = (pf['holdings'] as List?) ?? [];
+        _note = pf['note'] as String?;
+        _loading = false;
+      });
+    } catch (_) {
+      setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(14, 10, 14, 2),
+        child: Row(
+          children: _horizonLabels.entries.map((e) {
+            final active = _horizon == e.key;
+            return Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: GestureDetector(
+                onTap: () {
+                  _horizon = e.key;
+                  _load();
+                },
+                child: AnimatedContainer(
+                  duration: 180.ms,
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: active ? accent : surface,
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: active ? accent : line),
+                  ),
+                  child: Text(e.value,
+                      style: TextStyle(
+                          color: active ? const Color(0xFF06283D) : muted,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12.5)),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+      ),
+      Expanded(
+        child: _loading
+            ? const Center(child: CircularProgressIndicator(color: accent))
+            : RefreshIndicator(
+                onRefresh: _load,
+                color: accent,
+                backgroundColor: surface2,
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(14, 6, 14, 24),
+                  children: [
+                    if (_holdings.isNotEmpty) ...[
+                      sectionTitle('Mon portefeuille — analyse'),
+                      if (_note != null)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
+                          child: Text(_note!, style: const TextStyle(color: muted, fontSize: 12, height: 1.4)),
+                        ),
+                      ..._holdings.asMap().entries.map(
+                          (e) => _aHoldingCard(context, e.value as Map<String, dynamic>).enter(e.key)),
+                    ],
+                    sectionTitle('Meilleures opportunités — ${_horizonLabels[_horizon]!.toLowerCase()}'),
+                    if (_opps.isEmpty)
+                      glassCard(
+                          child: const Text('Aucune opportunité analysable pour cet horizon.',
+                              style: TextStyle(color: muted)))
+                    else
+                      ..._opps.asMap().entries.map((e) =>
+                          _aOppCard(context, e.value as Map<String, dynamic>, _horizon).enter(e.key + 1)),
+                  ],
+                ),
+              ),
+      ),
+    ]);
+  }
+}
+
+Widget _aHoldingCard(BuildContext context, Map<String, dynamic> h) {
+  final risk = h['risk_score'] as num?;
+  return glassCard(
+    onTap: () => showAnalysisSheet(context, h['symbol'] as String, 'medium'),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Text(h['symbol'] ?? '', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15)),
+        const SizedBox(width: 8),
+        badge(h['recommendation_label'] ?? '', recColor('${h['recommendation']}')),
+        const Spacer(),
+        if (risk != null)
+          Text('Risque ${risk.round()}',
+              style: TextStyle(
+                  color: risk >= 60 ? red : muted, fontSize: 11, fontWeight: FontWeight.w700)),
+      ]),
+      const SizedBox(height: 6),
+      Text(h['suggested_action'] ?? '',
+          style: const TextStyle(color: muted, fontSize: 12, height: 1.4)),
+    ]),
+  );
+}
+
+Widget _aOppCard(BuildContext context, Map<String, dynamic> o, String horizon) {
+  final score = (o['score'] as num?)?.toDouble() ?? 0;
+  return glassCard(
+    onTap: () => showAnalysisSheet(context, o['symbol'] as String, horizon),
+    child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _scoreRing(score),
+      const SizedBox(width: 14),
+      Expanded(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Text(o['symbol'] ?? '', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15)),
+            const SizedBox(width: 8),
+            badge(o['recommendation_label'] ?? '', recColor('${o['recommendation']}')),
+            const Spacer(),
+            Text('Confiance ${(o['confidence'] as num?)?.round() ?? 0}',
+                style: const TextStyle(color: muted, fontSize: 11, fontWeight: FontWeight.w600)),
+          ]),
+          Text(o['company_name'] ?? '',
+              style: const TextStyle(color: muted, fontSize: 12), overflow: TextOverflow.ellipsis),
+          const SizedBox(height: 6),
+          if (o['top_bullish'] != null) _argLine('${o['top_bullish']}', green),
+          if (o['top_bearish'] != null) _argLine('${o['top_bearish']}', red),
+        ]),
+      ),
+    ]),
+  );
+}
+
+Widget _argLine(String text, Color color) => Padding(
+      padding: const EdgeInsets.only(top: 2),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('• ', style: TextStyle(color: color)),
+        Expanded(child: Text(text, style: const TextStyle(color: muted, fontSize: 12, height: 1.35))),
+      ]),
+    );
+
+void showAnalysisSheet(BuildContext context, String symbol, String horizon) {
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: bg,
+    shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
+    builder: (c) => DraggableScrollableSheet(
+      initialChildSize: 0.92,
+      maxChildSize: 0.96,
+      expand: false,
+      builder: (c, ctrl) => FutureBuilder(
+        future: api('api/analysis/$symbol?horizon=$horizon'),
+        builder: (c, snap) {
+          if (!snap.hasData) return const Center(child: CircularProgressIndicator(color: accent));
+          return _analysisBody(snap.data as Map<String, dynamic>, ctrl);
+        },
+      ),
+    ),
+  );
+}
+
+Color _hCol(num? v) => v == null ? muted : (v >= 65 ? green : (v >= 50 ? accent : muted));
+
+Widget _analysisBody(Map<String, dynamic> d, ScrollController ctrl) {
+  final ex = d['explainability'] as Map<String, dynamic>? ?? {};
+  final scores = d['scores'] as Map<String, dynamic>? ?? {};
+  final pf = d['portfolio'] as Map<String, dynamic>?;
+  final bullish = (d['bullish'] as List?) ?? [];
+  final bearish = (d['bearish'] as List?) ?? [];
+  final missing = (ex['missing_data'] as List?) ?? [];
+  final dataUsed = (ex['data_used'] as List?) ?? [];
+  final watchNext = (d['watch_next'] as List?) ?? [];
+  return ListView(controller: ctrl, padding: const EdgeInsets.fromLTRB(16, 10, 16, 28), children: [
+    Center(
+        child: Container(
+            width: 40,
+            height: 4,
+            margin: const EdgeInsets.only(bottom: 14),
+            decoration: BoxDecoration(color: line, borderRadius: BorderRadius.circular(2)))),
+    Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+      Expanded(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('${d['symbol']}', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
+          Text('${d['company_name'] ?? ''}', style: const TextStyle(color: muted, fontSize: 13)),
+        ]),
+      ),
+      badge(d['recommendation_label'] ?? '', recColor('${d['recommendation']}')),
+    ]),
+    const SizedBox(height: 10),
+    Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+      Text('${fmt(d['price'])}',
+          style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800, letterSpacing: -1)),
+      const SizedBox(width: 6),
+      const Padding(
+          padding: EdgeInsets.only(bottom: 4),
+          child: Text('MAD', style: TextStyle(color: muted, fontSize: 12))),
+      const Spacer(),
+      Text('${d['horizon_label'] ?? ''}',
+          style: const TextStyle(color: accent, fontSize: 12.5, fontWeight: FontWeight.w700)),
+    ]),
+    const SizedBox(height: 12),
+    glassCard(
+      child: Column(children: [
+        Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
+          _scoreCol('Court', scores['short'], _hCol(scores['short'] as num?)),
+          _scoreCol('Moyen', scores['medium'], _hCol(scores['medium'] as num?)),
+          _scoreCol('Long', scores['long'], _hCol(scores['long'] as num?)),
+        ]),
+        const SizedBox(height: 12),
+        _gaugeRow('Confiance', d['confidence'], accent),
+        _gaugeRow('Risque', d['risk_score'], red),
+      ]),
+    ),
+    sectionTitle('Scénario attendu'),
+    glassCard(
+        child: Text('${d['expected_scenario'] ?? ''}',
+            style: const TextStyle(fontSize: 13, height: 1.5))),
+    Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Expanded(
+          child: _listCard('Arguments haussiers',
+              bullish.isEmpty ? ['Aucun argument fort détecté.'] : bullish, green)),
+      const SizedBox(width: 10),
+      Expanded(
+          child: _listCard('Arguments baissiers',
+              bearish.isEmpty ? ['Aucun signal négatif fort détecté.'] : bearish, red)),
+    ]),
+    sectionTitle('Synthèses'),
+    glassCard(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _sumRow('Technique', d['technical_summary']),
+        const Divider(color: line, height: 18),
+        _sumRow('Actualités', d['news_summary']),
+        const Divider(color: line, height: 18),
+        _sumRow('Historique', d['history_summary']),
+      ]),
+    ),
+    if (pf != null) ...[
+      sectionTitle('Ma position'),
+      glassCard(
+          child: Text('${pf['impact'] ?? ''}', style: const TextStyle(fontSize: 13, height: 1.5))),
+    ],
+    sectionTitle('Action suggérée'),
+    glassCard(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('${d['suggested_action'] ?? ''}', style: const TextStyle(fontSize: 13, height: 1.5)),
+        if (watchNext.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          const Text('À surveiller ensuite',
+              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5)),
+          const SizedBox(height: 4),
+          ...watchNext.map((w) => _argLine('$w', accent)),
+        ],
+      ]),
+    ),
+    sectionTitle('Gestion du risque'),
+    glassCard(
+        child: Text('${d['risk_note'] ?? ''}',
+            style: const TextStyle(color: amber, fontSize: 12.5, height: 1.5))),
+    if (missing.isNotEmpty) ...[
+      sectionTitle('Données manquantes'),
+      glassCard(
+        child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: missing.map((m) => _argLine('$m', amber)).toList()),
+      ),
+    ],
+    sectionTitle('Explication'),
+    glassCard(
+        child: Text('${d['explanation'] ?? ''}', style: const TextStyle(fontSize: 13, height: 1.55))),
+    if (dataUsed.isNotEmpty)
+      Padding(
+        padding: const EdgeInsets.fromLTRB(4, 6, 4, 0),
+        child: Text('Données utilisées : ${dataUsed.join(' · ')}',
+            style: const TextStyle(color: muted, fontSize: 11, height: 1.4)),
+      ),
+    Padding(
+      padding: const EdgeInsets.fromLTRB(4, 12, 4, 0),
+      child: Text('${d['disclaimer'] ?? ''}',
+          style: const TextStyle(color: muted, fontSize: 11, fontStyle: FontStyle.italic)),
+    ),
+  ]);
+}
+
+Widget _gaugeRow(String label, dynamic value, Color color) {
+  final v = (value as num?)?.toDouble() ?? 0;
+  return Padding(
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    child: Row(children: [
+      SizedBox(width: 78, child: Text(label, style: const TextStyle(fontSize: 12.5, color: muted))),
+      Expanded(
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(6),
+          child: TweenAnimationBuilder<double>(
+            tween: Tween(begin: 0, end: (v.clamp(0, 100)) / 100),
+            duration: 500.ms,
+            curve: Curves.easeOutCubic,
+            builder: (c, val, _) =>
+                LinearProgressIndicator(value: val, backgroundColor: surface2, color: color, minHeight: 8),
+          ),
+        ),
+      ),
+      SizedBox(
+          width: 36,
+          child: Text('  ${v.round()}',
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+              textAlign: TextAlign.right)),
+    ]),
+  );
+}
+
+Widget _sumRow(String label, dynamic text) =>
+    Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(label,
+          style: const TextStyle(
+              color: muted, fontSize: 11.5, fontWeight: FontWeight.w700, letterSpacing: 0.5)),
+      const SizedBox(height: 3),
+      Text('$text', style: const TextStyle(fontSize: 12.5, height: 1.45)),
+    ]);
+
 // ------------------------------- news ------------------------------------- //
 class NewsPage extends StatefulWidget {
   const NewsPage({super.key});
@@ -701,6 +1059,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
         'intraday' => Icons.update,
         'test' => Icons.check_circle_outline,
         'urgent' => Icons.warning_amber_rounded,
+        'analysis' => Icons.psychology_outlined,
         _ => Icons.notifications_outlined,
       };
 
