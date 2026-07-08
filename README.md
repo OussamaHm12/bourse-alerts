@@ -251,6 +251,37 @@ Endpoints:
 - `GET /api/health`, `GET /api/vapid-public-key`
 - `POST /api/push/subscribe`, `POST /api/push/test`, `POST /api/run-now`
 
+### Explainable investment analysis (Analyse IA)
+
+Per-horizon, explainable analyses built from the internal data only (prices,
+metrics, scores, news, portfolio). Missing metrics are reported, never guessed;
+the wording stays probabilistic and every payload carries the disclaimer.
+
+- `GET /api/analysis/{symbol}?horizon=short|medium|long` — full analysis: recommendation
+  (Forte opportunité / À surveiller / Conserver / Prendre des bénéfices / Éviter / Risqué),
+  confidence, risk, expected scenario, bullish/bearish arguments, summaries, portfolio
+  impact, suggested action, watch-next list, and an `explainability` block
+  (`data_used`, `positive_factors`, `negative_factors`, `missing_data`,
+  `decision_reason`, `confidence_reason`, `risk_reason`).
+- `GET /api/analysis/opportunities?horizon=&min_score=&limit=` — ranked opportunities per horizon
+- `GET /api/analysis/portfolio` — per-holding analysis + positions needing attention
+- `GET /api/analysis/market-summary` — market regime, breadth, top picks per horizon
+
+Scoring (weighted mean of the AVAILABLE components only — see
+[horizon_strategy.py](moroccan_stock_intelligence/services/horizon_strategy.py)):
+
+- short  = 0.30 momentum(1j/5j) + 0.20 volume + 0.20 cassure + 0.15 support + 0.15 actus
+- medium = 0.35 tendance(30/90j) + 0.25 moyennes mobiles + 0.15 secteur + 0.15 volatilité⁻¹ + 0.10 actus
+- long   = 0.30 tendance longue + 0.30 stabilité + 0.20 structure 52s + 0.10 secteur + 0.10 événements
+- le score est atténué vers 50 quand moins de 80 % des composantes sont disponibles
+  (pas de fausse certitude construite sur un seul indicateur)
+- confidence = 50·couverture + 30·min(historique/cible, 1) + 20·cohérence (cibles 30/90/250 j)
+
+Intelligent notifications (web push + in-app inbox only, Telegram untouched):
+held position with SELL advice or risk ≥ 70, fresh negative news on a holding,
+or a new short-term opportunity (score ≥ 72, confidence ≥ 55, risk < 60).
+Deduplicated once per symbol per day, max 3 per scheduled run.
+
 ### Deployment (for notifications on the go)
 
 Web push and PWA install require **HTTPS** in production (`http://localhost` is exempt for dev).

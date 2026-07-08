@@ -570,17 +570,18 @@ def analysis_portfolio(session: Session) -> dict:
     total_value = sum(h.market_value for h in priced)
     total_cost = sum(h.cost_basis for h in priced)
     total_net = sum(h.net_pl for h in priced if h.net_pl is not None)
+    total_net_txt = f"{total_net:+,.0f}".replace(",", " ")
     if not holdings:
         note = "Aucune position enregistrée : renseignez PORTFOLIO_JSON côté serveur."
     elif attention:
         note = (
             f"{len(holdings)} position(s) suivie(s) ; {len(attention)} nécessite(nt) une attention "
-            f"({', '.join(attention)}). P/L net global {total_net:+,.0f} MAD.".replace(",", " ")
+            f"({', '.join(attention)}). P/L net global {total_net_txt} MAD."
         )
     else:
         note = (
             f"{len(holdings)} position(s) suivie(s), aucune alerte majeure. "
-            f"P/L net global {total_net:+,.0f} MAD.".replace(",", " ")
+            f"P/L net global {total_net_txt} MAD."
         )
     return {
         "as_of": datetime.now(UTC).isoformat(),

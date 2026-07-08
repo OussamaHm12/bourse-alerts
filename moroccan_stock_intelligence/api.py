@@ -13,6 +13,12 @@ from moroccan_stock_intelligence.db import get_engine, get_session_factory, init
 from moroccan_stock_intelligence.logging_config import configure_logging
 from moroccan_stock_intelligence.scheduler import build_scheduler, run_update_now
 from moroccan_stock_intelligence.repository import save_notification
+from moroccan_stock_intelligence.services.investment_analysis import (
+    analysis_market_summary,
+    analysis_opportunities,
+    analysis_portfolio,
+    analyze_symbol,
+)
 from moroccan_stock_intelligence.services.push import save_subscription, send_push_to_all
 from moroccan_stock_intelligence.services.views import (
     news_payload,
@@ -163,6 +169,49 @@ async def run_now(background_tasks: BackgroundTasks) -> dict:
     """
     background_tasks.add_task(run_update_now, SessionFactory, "Manuel (bouton)")
     return {"queued": True}
+
+
+# ---- Explainable investment analysis --------------------------------------
+# NOTE: the fixed /api/analysis/* routes MUST stay registered before the
+# parameterized /api/analysis/{symbol} route, or FastAPI would treat
+# "opportunities" / "portfolio" / "market-summary" as symbols.
+
+_VALID_HORIZONS = {"short", "medium", "long"}
+
+
+def _check_horizon(horizon: str) -> str:
+    if horizon not in _VALID_HORIZONS:
+        raise HTTPException(status_code=400, detail="horizon must be short, medium or long")
+    return horizon
+
+
+@app.get("/api/analysis/market-summary")
+def analysis_market() -> dict:
+    with SessionFactory() as session:
+        return analysis_market_summary(session)
+
+
+@app.get("/api/analysis/portfolio")
+def analysis_holdings() -> dict:
+    with SessionFactory() as session:
+        return analysis_portfolio(session)
+
+
+@app.get("/api/analysis/opportunities")
+def analysis_opps(horizon: str = "short", min_score: float = 50.0, limit: int = 15) -> dict:
+    with SessionFactory() as session:
+        return analysis_opportunities(
+            session, _check_horizon(horizon), min_score=min_score, limit=limit
+        )
+
+
+@app.get("/api/analysis/{symbol}")
+def analysis_stock(symbol: str, horizon: str = "short") -> dict:
+    with SessionFactory() as session:
+        payload = analyze_symbol(session, symbol, _check_horizon(horizon))
+    if payload is None:
+        raise HTTPException(status_code=404, detail="symbol not found")
+    return payload
 
 
 # The PWA static files are mounted last so the API routes above take priority.

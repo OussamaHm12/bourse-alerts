@@ -126,6 +126,14 @@ def _aggregate(
     coverage = sum(weights[key] for key in available)
     if available and coverage > 0:
         score = sum(value * weights[key] for key, value in available.items()) / coverage
+        # Shrink toward neutral when coverage is low: a strong score built on a
+        # single available component would be fake certainty. Full signal only
+        # from 80% coverage upward.
+        score = 50 + (score - 50) * min(1.0, coverage / 0.8)
+        if coverage < 0.6:
+            notes.append(
+                f"Signal atténué : seulement {int(coverage * 100)}% des indicateurs de cet horizon sont disponibles."
+            )
     else:
         score = 50.0
         notes.append("Aucun indicateur exploitable pour cet horizon : score neutre par défaut.")
