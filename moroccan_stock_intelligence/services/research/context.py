@@ -13,17 +13,22 @@ fabricates numbers (locked decision #2).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
 from moroccan_stock_intelligence.repository import (
+    load_company_profiles,
+    load_fundamentals,
     load_history_depths,
+    load_latest_macro,
     load_recent_news,
     load_symbol_history,
 )
 from moroccan_stock_intelligence.services.analytics import MetricSet
+from moroccan_stock_intelligence.services.collectors import DERIVED_SOURCE
 from moroccan_stock_intelligence.services.horizon_strategy import NewsContext
 from moroccan_stock_intelligence.services.portfolio import (
     HoldingEvaluation,
@@ -61,49 +66,76 @@ class NewsView:
 
 @dataclass(frozen=True)
 class Fundamentals:
-    as_of: datetime | None = None
+    """The six ratios the Casablanca Bourse issuer page actually publishes.
+
+    Revenue, net income, margins, ROA, debt/equity and book value are NOT
+    published in machine-readable form (validated 2026-07-09), so they are
+    absent here rather than present-and-always-None. `fundamental.py` names them
+    in `missing_data` instead.
+
+    `per_is_derived` marks a PER computed as price / BPA because the published
+    cell was "-". Such a value must be presented as inference, never as fact.
+    """
+
+    fiscal_year: int | None = None
+    eps: float | None = None  # BPA, MAD
+    roe: float | None = None  # %
+    payout: float | None = None  # %
+    dividend_yield: float | None = None  # %
     per: float | None = None
     pbr: float | None = None
-    eps: float | None = None
-    dividend_yield: float | None = None
-    roe: float | None = None
-    roa: float | None = None
-    net_margin: float | None = None
-    revenue: float | None = None
-    net_income: float | None = None
-    debt_to_equity: float | None = None
-    book_value: float | None = None
+    per_is_derived: bool = False
     source: str | None = None
+    source_url: str | None = None
 
     @property
     def has_data(self) -> bool:
         return any(
             v is not None
-            for v in (self.per, self.pbr, self.eps, self.dividend_yield, self.roe, self.revenue)
+            for v in (self.eps, self.roe, self.payout, self.dividend_yield, self.per, self.pbr)
         )
 
 
 @dataclass(frozen=True)
 class CompanyProfile:
+    """Issuer identity. `description` is the published "Objet social".
+
+    No business-model field is published, and the `Dirigeants` table layout is
+    unconfirmed, so `business_model` and `management` stay None rather than being
+    synthesised.
+    """
+
+    company_name: str | None = None
     description: str | None = None
     business_model: str | None = None
-    management: str | None = None
-    ownership: str | None = None
+    siege_social: str | None = None
+    commissaire_aux_comptes: str | None = None
+    date_constitution: str | None = None
+    date_introduction: str | None = None
+    duree_exercice_social: str | None = None
+    ownership: list[dict] | None = None  # [{"holder": .., "pct": ..}, ..]
+    management: list[dict] | None = None
     updated_at: datetime | None = None
     source: str | None = None
+    source_url: str | None = None
 
     @property
     def has_data(self) -> bool:
-        return bool(self.description or self.business_model)
+        return bool(self.description or self.business_model or self.ownership)
 
 
 @dataclass(frozen=True)
 class MacroSnapshot:
+    """Bank Al-Maghrib series. Oil and phosphate are not published by BAM and are
+    permanently None — `macro.py` reports them as missing, never as zero."""
+
     as_of: datetime | None = None
-    policy_rate: float | None = None
-    inflation: float | None = None
-    mad_usd: float | None = None
+    policy_rate: float | None = None  # %
+    interbank_rate: float | None = None  # % (TMP)
+    inflation: float | None = None  # %
+    inflation_underlying: float | None = None  # %
     mad_eur: float | None = None
+    mad_usd: float | None = None
     oil: float | None = None
     phosphate: float | None = None
     source: str | None = None
@@ -112,7 +144,13 @@ class MacroSnapshot:
     def has_data(self) -> bool:
         return any(
             v is not None
-            for v in (self.policy_rate, self.inflation, self.mad_usd, self.oil, self.phosphate)
+            for v in (
+                self.policy_rate,
+                self.interbank_rate,
+                self.inflation,
+                self.mad_eur,
+                self.mad_usd,
+            )
         )
 
 
@@ -232,20 +270,109 @@ def _build_news(session: Session) -> tuple[dict[str, list[NewsView]], dict[str, 
     return grouped, contexts
 
 
-# Phase 1b will replace these three stubs with real repository loaders once the
-# fundamentals / company_profiles / macro_indicators tables exist. Returning
-# empty now keeps Phase 1 non-breaking (no new tables, no migration) while the
-# analysts already handle the populated case.
-def _load_fundamentals(session: Session) -> dict[str, Fundamentals]:  # noqa: ARG001
-    return {}
+# --------------------------------------------------------------------------- #
+# Phase 1b feeds. A feed with no collected rows yields no entry, so the owning  #
+# analyst emits its honest "unavailable" report. Nothing defaults to 0.        #
+# --------------------------------------------------------------------------- #
+
+# BKAM series name -> MacroSnapshot field.
+_MACRO_FIELDS = {
+    "policy_rate": "policy_rate",
+    "interbank_money_market": "interbank_rate",
+    "inflation_rate": "inflation",
+    "inflation_underlying_rate": "inflation_underlying",
+    "eur": "mad_eur",
+    "usd": "mad_usd",
+}
 
 
-def _load_profiles(session: Session) -> dict[str, CompanyProfile]:  # noqa: ARG001
-    return {}
+def _json_or_none(raw: str | None) -> list[dict] | None:
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if isinstance(value, list) and value else None
 
 
-def _load_macro(session: Session) -> MacroSnapshot | None:  # noqa: ARG001
-    return None
+def _load_fundamentals(session: Session) -> dict[str, Fundamentals]:
+    """Latest fiscal year per symbol. An official value always beats a derived one:
+    a derived PER is used only when the published cell was missing."""
+    out: dict[str, Fundamentals] = {}
+    for symbol, rows in load_fundamentals(session).items():
+        if not rows:
+            continue
+        latest_year = rows[0]["fiscal_year"]  # loader sorts fiscal_year DESC
+        for_year = [r for r in rows if r["fiscal_year"] == latest_year]
+        official = next((r for r in for_year if r["source"] != DERIVED_SOURCE), None)
+        derived = next((r for r in for_year if r["source"] == DERIVED_SOURCE), None)
+        anchor = official or derived
+        if anchor is None:
+            continue
+
+        per = official["per"] if official else None
+        per_is_derived = False
+        if per is None and derived is not None and derived["per"] is not None:
+            per = derived["per"]
+            per_is_derived = True
+
+        out[symbol] = Fundamentals(
+            fiscal_year=latest_year,
+            eps=official["eps"] if official else None,
+            roe=official["roe_pct"] if official else None,
+            payout=official["payout_pct"] if official else None,
+            dividend_yield=official["dividend_yield_pct"] if official else None,
+            pbr=official["pbr"] if official else None,
+            per=per,
+            per_is_derived=per_is_derived,
+            source=anchor["source"],
+            source_url=anchor["source_url"],
+        )
+    return out
+
+
+def _load_profiles(session: Session) -> dict[str, CompanyProfile]:
+    return {
+        symbol: CompanyProfile(
+            company_name=row["company_name"],
+            description=row["description"],
+            business_model=row["business_model"],
+            siege_social=row["siege_social"],
+            commissaire_aux_comptes=row["commissaire_aux_comptes"],
+            date_constitution=row["date_constitution"],
+            date_introduction=row["date_introduction"],
+            duree_exercice_social=row["duree_exercice_social"],
+            ownership=_json_or_none(row["ownership_json"]),
+            management=_json_or_none(row["management_json"]),
+            updated_at=_aware(row["updated_at"]),
+            source=row["source"],
+            source_url=row["source_url"],
+        )
+        for symbol, row in load_company_profiles(session).items()
+    }
+
+
+def _load_macro(session: Session) -> MacroSnapshot | None:
+    latest = load_latest_macro(session)
+    if not latest:
+        return None
+    values: dict[str, float] = {}
+    stamps: list[datetime] = []
+    source: str | None = None
+    for indicator, row in latest.items():
+        field = _MACRO_FIELDS.get(indicator)
+        if field is None:
+            continue  # unknown series: ignored, never guessed into a field
+        values[field] = row["value"]
+        when = _aware(row["as_of"])
+        if when is not None:
+            stamps.append(when)
+        source = source or row["source"]
+    if not values:
+        return None
+    # oil / phosphate stay absent: BAM does not publish them.
+    return MacroSnapshot(as_of=max(stamps) if stamps else None, source=source, **values)
 
 
 def gather(session: Session) -> GatheredState:

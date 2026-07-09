@@ -38,7 +38,9 @@ from moroccan_stock_intelligence.services.research.contracts import (
     Scenario,
 )
 
-ENGINE_VERSION = "1.0"
+# Bumped to 1.1 in Phase 1b: reports may now carry real fundamentals, company
+# profile and macro data. Stored reports must never be compared across versions.
+ENGINE_VERSION = "1.1"
 
 DISCLAIMER = (
     "Information seulement — ceci n'est pas un conseil en investissement. "

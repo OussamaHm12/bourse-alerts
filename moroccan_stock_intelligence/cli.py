@@ -45,6 +45,11 @@ def main(argv: list[str] | None = None) -> None:
     subparsers.add_parser("watch-holdings")
     subparsers.add_parser("run-once")
     subparsers.add_parser("gen-vapid")
+    subparsers.add_parser("collect-macro")
+    issuers_parser = subparsers.add_parser("collect-issuers")
+    issuers_parser.add_argument(
+        "--symbols", nargs="*", help="limit to these symbols (default: every stock)"
+    )
     serve_parser = subparsers.add_parser("serve")
     serve_parser.add_argument("--host", default=os.getenv("HOST", "127.0.0.1"))
     # Managed hosts (Railway, Render, Fly) inject the public port via $PORT.
@@ -91,6 +96,14 @@ def main(argv: list[str] | None = None) -> None:
             run_news(session)
             run_analysis(session)
             LOG.info("run_complete")
+        elif command == "collect-macro":
+            from moroccan_stock_intelligence.services.collectors.macro import collect_macro
+
+            LOG.info("macro_collected new_observations=%s", collect_macro(session))
+        elif command == "collect-issuers":
+            from moroccan_stock_intelligence.services.collectors.issuers import collect_issuers
+
+            LOG.info("issuers_collected %s", collect_issuers(session, symbols=args.symbols))
         else:
             parser.error(f"unknown command: {command}")
 

@@ -123,3 +123,110 @@ class News(Base):
     event_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     sentiment: Mapped[str | None] = mapped_column(String(32), nullable=True)
     impact_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 1b feeds. All three are NEW tables, so `create_all` creates them        #
+# idempotently and no existing table is ever ALTERed.                           #
+#                                                                               #
+# Every ratio/value column is nullable on purpose: the sources publish a literal #
+# "-" for a missing cell, which must land as NULL — never 0.0. A field we cannot #
+# collect is absent from the row, and the owning analyst reports it as missing.  #
+# --------------------------------------------------------------------------- #
+
+class Fundamental(Base):
+    """The six ratios officially published on the Casablanca Bourse issuer page.
+
+    One row per (stock, fiscal year, source). The page exposes a
+    `Ratio | 2025 | 2024 | 2023` table, so `fiscal_year` — not a collection
+    timestamp — is the natural key.
+
+    Deliberately narrow (validated 2026-07-09): revenue, net income, margins,
+    ROA, debt/equity and book value are NOT published in machine-readable form,
+    so they get no permanently-NULL columns here.
+
+    `source` is "Casablanca Bourse" for published values, or "derived" for a PER
+    computed as price / BPA when the published cell was "-" (labelled inference,
+    never fact, and never overwriting an official value).
+    """
+
+    __tablename__ = "fundamentals"
+    __table_args__ = (
+        UniqueConstraint("stock_id", "fiscal_year", "source", name="uq_fundamental_year"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id"), index=True)
+    fiscal_year: Mapped[int] = mapped_column(Integer, index=True)
+    eps: Mapped[float | None] = mapped_column(Float, nullable=True)  # BPA (MAD)
+    roe_pct: Mapped[float | None] = mapped_column(Float, nullable=True)  # ROE (en %)
+    payout_pct: Mapped[float | None] = mapped_column(Float, nullable=True)  # Payout (en %)
+    dividend_yield_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    per: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pbr: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source: Mapped[str] = mapped_column(String(64))
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+    collected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class CompanyProfile(Base):
+    """Issuer identity from the same page that serves the fundamentals.
+
+    `description` holds "Objet social" (the company's stated business purpose).
+    There is no separate business-model field published, so `business_model`
+    stays NULL rather than being synthesised. `management_json` stays NULL until
+    the `Dirigeants de l'entreprise` table layout is confirmed.
+    """
+
+    __tablename__ = "company_profiles"
+    __table_args__ = (UniqueConstraint("stock_id", name="uq_company_profile_stock"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id"), index=True)
+    emetteur_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    emetteur_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    company_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)  # Objet social
+    business_model: Mapped[str | None] = mapped_column(Text, nullable=True)  # not published
+    siege_social: Mapped[str | None] = mapped_column(Text, nullable=True)
+    commissaire_aux_comptes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    date_constitution: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    date_introduction: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    duree_exercice_social: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ownership_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    management_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(String(64))
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MacroIndicator(Base):
+    """One observation of one Bank Al-Maghrib series.
+
+    Long/narrow rather than wide, so a new indicator never needs a schema change.
+    Known indicators: policy_rate, interbank_money_market, inflation_rate,
+    inflation_underlying_rate, mad_eur, mad_usd. Oil and phosphate are NOT
+    published by BAM and are therefore simply absent (never zero).
+    """
+
+    __tablename__ = "macro_indicators"
+    __table_args__ = (
+        UniqueConstraint("indicator", "as_of", "source", name="uq_macro_observation"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    indicator: Mapped[str] = mapped_column(String(48), index=True)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    value: Mapped[float] = mapped_column(Float)
+    unit: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    source: Mapped[str] = mapped_column(String(64))
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    collected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

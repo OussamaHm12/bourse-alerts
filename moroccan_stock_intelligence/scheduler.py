@@ -89,6 +89,61 @@ def _intraday_job(session_factory, period_label: str) -> None:  # noqa: ANN001
             LOG.exception("intraday_job_failed period=%s", period_label)
 
 
+def _macro_job(session_factory) -> None:  # noqa: ANN001
+    """Daily Bank Al-Maghrib collection. One page, no symbol loop, off the hot path."""
+    from moroccan_stock_intelligence.services.collectors.macro import collect_macro
+
+    with session_factory() as session:
+        try:
+            stored = collect_macro(session)
+            LOG.info("macro_job_done new_observations=%s", stored)
+        except Exception:  # noqa: BLE001 - a scheduled job must never crash the scheduler.
+            LOG.exception("macro_job_failed")
+
+
+def _issuer_job(session_factory) -> None:  # noqa: ANN001
+    """Weekly issuer collection.
+
+    The profile and the six ratios live on the SAME page, so both feeds are
+    refreshed from a single fetch per issuer. Splitting them across different
+    cadences would double the requests for no benefit. Ratios only change once a
+    year, so weekly is already generous.
+    """
+    from moroccan_stock_intelligence.services.collectors.issuers import collect_issuers
+
+    with session_factory() as session:
+        try:
+            tally = collect_issuers(session)
+            LOG.info("issuer_job_done %s", tally)
+        except Exception:  # noqa: BLE001 - a scheduled job must never crash the scheduler.
+            LOG.exception("issuer_job_failed")
+
+
+def _feeds_bootstrap_job(session_factory) -> None:  # noqa: ANN001
+    """Seed the Phase 1b feeds once if they are empty (fresh deploy / new volume).
+
+    Without this, a new database would leave the macro / company / fundamental
+    analysts reporting "unavailable" until the next weekly slot. Macro is cheap
+    (one page); the issuer sweep is ~80 polite sequential fetches, so it only runs
+    when the table is genuinely empty.
+    """
+    from moroccan_stock_intelligence.models import Fundamental, MacroIndicator
+    from moroccan_stock_intelligence.services.collectors.issuers import collect_issuers
+    from moroccan_stock_intelligence.services.collectors.macro import collect_macro
+
+    with session_factory() as session:
+        try:
+            if not session.scalar(select(func.count()).select_from(MacroIndicator)):
+                collect_macro(session)
+        except Exception:  # noqa: BLE001
+            LOG.exception("feeds_bootstrap_macro_failed")
+        try:
+            if not session.scalar(select(func.count()).select_from(Fundamental)):
+                collect_issuers(session)
+        except Exception:  # noqa: BLE001
+            LOG.exception("feeds_bootstrap_issuers_failed")
+
+
 def _bootstrap_job(session_factory) -> None:  # noqa: ANN001
     """Seed the DB once at startup if it has no price history yet.
 
@@ -152,6 +207,35 @@ def build_scheduler(session_factory) -> BackgroundScheduler:  # noqa: ANN001
         args=[session_factory, "Point intraday"],
         id="intraday_update",
         misfire_grace_time=1800,
+        replace_existing=True,
+    )
+
+    # --- Phase 1b feeds: deliberately off the report hot path. ---
+    # One-off seed shortly after boot, only if the feed tables are empty.
+    scheduler.add_job(
+        _feeds_bootstrap_job,
+        "date",
+        run_date=datetime.now(ZoneInfo(settings.timezone)) + timedelta(seconds=90),
+        args=[session_factory],
+        id="feeds_bootstrap",
+        replace_existing=True,
+    )
+    # Macro: daily before the open (BAM refreshes FX daily, the policy rate rarely).
+    scheduler.add_job(
+        _macro_job,
+        CronTrigger(day_of_week="mon-fri", hour=7, minute=30, timezone=settings.timezone),
+        args=[session_factory],
+        id="macro_collect",
+        misfire_grace_time=3600,
+        replace_existing=True,
+    )
+    # Issuers: weekly, off-market (Sunday 03:00). Ratios change once a year.
+    scheduler.add_job(
+        _issuer_job,
+        CronTrigger(day_of_week="sun", hour=3, minute=0, timezone=settings.timezone),
+        args=[session_factory],
+        id="issuer_collect",
+        misfire_grace_time=7200,
         replace_existing=True,
     )
     return scheduler
