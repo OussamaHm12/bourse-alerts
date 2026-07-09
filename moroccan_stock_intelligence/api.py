@@ -20,6 +20,8 @@ from moroccan_stock_intelligence.services.investment_analysis import (
     analyze_symbol,
 )
 from moroccan_stock_intelligence.services.push import save_subscription, send_push_to_all
+from moroccan_stock_intelligence.services.research.contracts import report_to_dict
+from moroccan_stock_intelligence.services.research.orchestrator import analyze_report
 from moroccan_stock_intelligence.services.views import (
     news_payload,
     notifications_payload,
@@ -212,6 +214,19 @@ def analysis_stock(symbol: str, horizon: str = "short") -> dict:
     if payload is None:
         raise HTTPException(status_code=404, detail="symbol not found")
     return payload
+
+
+# ---- Multi-analyst investment report (new reasoning engine) ----------------
+# Additive and non-breaking: the /api/analysis/* routes above are unchanged. This
+# returns the full InvestmentReport (CIO verdict per horizon + every analyst's
+# structured JSON + risk + scenarios).
+@app.get("/api/report/{symbol}")
+def report_stock(symbol: str, horizon: str = "short") -> dict:
+    with SessionFactory() as session:
+        report = analyze_report(session, symbol, _check_horizon(horizon))
+    if report is None:
+        raise HTTPException(status_code=404, detail="symbol not found")
+    return report_to_dict(report)
 
 
 # The PWA static files are mounted last so the API routes above take priority.
