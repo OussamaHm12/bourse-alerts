@@ -27,6 +27,7 @@ from moroccan_stock_intelligence.services.research.contracts import (
     RiskReport,
     Statement,
 )
+from moroccan_stock_intelligence.services.research.debate import build_debate, debate_summary
 
 VERSION = "1.0"
 
@@ -140,8 +141,16 @@ def decide(
     risk: RiskReport,
     horizon_focus: str,
     avoid_score: float | None,
+    reliability: dict[str, float] | None = None,
 ) -> CIOReport:
+    """Reach the verdict. `reliability` is the learned per-analyst confidence
+    multiplier (Phase 3); absent or 1.0 means the analyst has not yet earned a
+    track record, and the debate then rests on stated confidence alone."""
     assessments = assess_all(ctx.metric, ctx.news, ctx.history_days)
+    reliability = reliability or {}
+
+    # Phase 6: the analysts argue, and the argument is resolved explicitly.
+    debate = build_debate(reports, reliability)
 
     verdicts: dict[str, HorizonVerdict] = {}
     for horizon in HORIZONS:
@@ -149,8 +158,8 @@ def decide(
         confidence, conf_reason = compute_confidence(a, ctx.history_days)
         rec = _recommend(a.score, confidence, risk.overall_risk, avoid_score, ctx)
         rationale = (
-            f"Score {a.score:.0f}/100, risque {risk.overall_risk:.0f}/100, confiance {confidence:.0f}/100. "
-            f"{conf_reason}"
+            f"Score {a.score:.0f}/100, risque {risk.overall_risk:.0f}/100, "
+            f"confiance {confidence:.0f}/100. {conf_reason} {debate_summary(debate, horizon)}"
         )
         verdicts[horizon] = HorizonVerdict(
             horizon=horizon,
@@ -166,6 +175,20 @@ def decide(
     contradictions = _contradictions(reports)
     bull_case = _cited(reports, "strengths", 6)
     bear_case = _cited(reports, "weaknesses", 6)
+
+    proven = {name: mult for name, mult in reliability.items() if abs(mult - 1.0) > 0.01}
+    if proven:
+        best = max(proven.items(), key=lambda kv: kv[1])
+        calibration_note = (
+            "Pondération ajustée par l'historique de fiabilité : "
+            + ", ".join(f"{name} ×{mult:.2f}" for name, mult in sorted(proven.items()))
+            + f". L'avis de « {best[0]} » pèse le plus lourd au vu de ses résultats passés."
+        )
+    else:
+        calibration_note = (
+            "Aucun analyste n'a encore assez de prédictions évaluées pour être recalibré : "
+            "tous les avis sont pondérés par leur seule confiance déclarée."
+        )
 
     focus = verdicts[horizon_focus]
     regime = ctx.market.regime
@@ -208,5 +231,7 @@ def decide(
         bear_case=bear_case,
         executive_summary=executive_summary,
         final_verdict=final_verdict,
+        debate=debate,
+        calibration_note=calibration_note,
         version=VERSION,
     )

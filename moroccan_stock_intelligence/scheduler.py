@@ -144,6 +144,54 @@ def _feeds_bootstrap_job(session_factory) -> None:  # noqa: ANN001
             LOG.exception("feeds_bootstrap_issuers_failed")
 
 
+def _research_job(session_factory) -> None:  # noqa: ANN001
+    """Generate + store a report for every stock, then notify on thesis changes only.
+
+    This is the expensive path, deliberately OFF the request path: the API then
+    serves stored reports. Notifications here are thesis-based, not event-based —
+    a stock that moved 4% with an unchanged thesis produces nothing.
+    """
+    from moroccan_stock_intelligence.services.research.notifications import (
+        dispatch_thesis_notifications,
+    )
+    from moroccan_stock_intelligence.services.research.orchestrator import generate_all
+
+    with session_factory() as session:
+        try:
+            generated = generate_all(session, horizon="short")
+            sent = dispatch_thesis_notifications(session, generated)
+            LOG.info("research_job_done reports=%s notifications=%s", len(generated), sent)
+        except Exception:  # noqa: BLE001 - a scheduled job must never crash the scheduler.
+            LOG.exception("research_job_failed")
+
+
+def _learning_job(session_factory) -> None:  # noqa: ANN001
+    """Grade matured predictions and recalibrate analyst confidence.
+
+    Statistical only (Brier + Bayesian shrinkage) — no ML. An analyst below the
+    sample threshold keeps a 1.0 multiplier, so the system never pretends to have
+    learned something it hasn't.
+    """
+    from moroccan_stock_intelligence.services.research.learning import run_learning_cycle
+
+    with session_factory() as session:
+        try:
+            LOG.info("learning_job_done %s", run_learning_cycle(session))
+        except Exception:  # noqa: BLE001 - a scheduled job must never crash the scheduler.
+            LOG.exception("learning_job_failed")
+
+
+def _knowledge_job(session_factory) -> None:  # noqa: ANN001
+    """Accumulate de-duplicated company knowledge from the collected feeds."""
+    from moroccan_stock_intelligence.services.research.knowledge import harvest_all
+
+    with session_factory() as session:
+        try:
+            LOG.info("knowledge_job_done new_facts=%s", harvest_all(session))
+        except Exception:  # noqa: BLE001 - a scheduled job must never crash the scheduler.
+            LOG.exception("knowledge_job_failed")
+
+
 def _bootstrap_job(session_factory) -> None:  # noqa: ANN001
     """Seed the DB once at startup if it has no price history yet.
 
@@ -235,6 +283,36 @@ def build_scheduler(session_factory) -> BackgroundScheduler:  # noqa: ANN001
         CronTrigger(day_of_week="sun", hour=3, minute=0, timezone=settings.timezone),
         args=[session_factory],
         id="issuer_collect",
+        misfire_grace_time=7200,
+        replace_existing=True,
+    )
+
+    # --- Research platform (Phases 2-9): all off the request hot path. ---
+    # Reports: after the close, once the day's prices are in. The API then serves
+    # these stored reports instead of recomputing per request.
+    scheduler.add_job(
+        _research_job,
+        CronTrigger(day_of_week="mon-fri", hour=18, minute=0, timezone=settings.timezone),
+        args=[session_factory],
+        id="research_reports",
+        misfire_grace_time=7200,
+        replace_existing=True,
+    )
+    # Learning: grade whatever matured today, then recalibrate. Cheap; daily.
+    scheduler.add_job(
+        _learning_job,
+        CronTrigger(hour=6, minute=0, timezone=settings.timezone),
+        args=[session_factory],
+        id="learning_cycle",
+        misfire_grace_time=7200,
+        replace_existing=True,
+    )
+    # Knowledge: after the weekly issuer sweep, so it harvests fresh data.
+    scheduler.add_job(
+        _knowledge_job,
+        CronTrigger(day_of_week="sun", hour=4, minute=30, timezone=settings.timezone),
+        args=[session_factory],
+        id="knowledge_harvest",
         misfire_grace_time=7200,
         replace_existing=True,
     )

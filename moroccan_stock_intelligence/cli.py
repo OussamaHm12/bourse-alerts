@@ -50,6 +50,11 @@ def main(argv: list[str] | None = None) -> None:
     issuers_parser.add_argument(
         "--symbols", nargs="*", help="limit to these symbols (default: every stock)"
     )
+    reports_parser = subparsers.add_parser("generate-reports")
+    reports_parser.add_argument("--symbols", nargs="*")
+    reports_parser.add_argument("--horizon", default="short", choices=["short", "medium", "long"])
+    subparsers.add_parser("learn")
+    subparsers.add_parser("harvest-knowledge")
     serve_parser = subparsers.add_parser("serve")
     serve_parser.add_argument("--host", default=os.getenv("HOST", "127.0.0.1"))
     # Managed hosts (Railway, Render, Fly) inject the public port via $PORT.
@@ -104,6 +109,23 @@ def main(argv: list[str] | None = None) -> None:
             from moroccan_stock_intelligence.services.collectors.issuers import collect_issuers
 
             LOG.info("issuers_collected %s", collect_issuers(session, symbols=args.symbols))
+        elif command == "generate-reports":
+            from moroccan_stock_intelligence.services.research.notifications import (
+                dispatch_thesis_notifications,
+            )
+            from moroccan_stock_intelligence.services.research.orchestrator import generate_all
+
+            generated = generate_all(session, horizon=args.horizon, symbols=args.symbols)
+            sent = dispatch_thesis_notifications(session, generated)
+            LOG.info("reports_generated count=%s notifications=%s", len(generated), sent)
+        elif command == "learn":
+            from moroccan_stock_intelligence.services.research.learning import run_learning_cycle
+
+            LOG.info("learning_cycle %s", run_learning_cycle(session))
+        elif command == "harvest-knowledge":
+            from moroccan_stock_intelligence.services.research.knowledge import harvest_all
+
+            LOG.info("knowledge_harvested new_facts=%s", harvest_all(session))
         else:
             parser.error(f"unknown command: {command}")
 

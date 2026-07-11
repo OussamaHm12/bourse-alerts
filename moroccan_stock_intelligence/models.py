@@ -206,6 +206,180 @@ class CompanyProfile(Base):
     )
 
 
+class AnalysisReport(Base):
+    """A generated InvestmentReport, stored verbatim so it is reproducible.
+
+    Doubles as the report cache: `/api/report/{symbol}` serves the newest row for
+    the requested horizon whose `engine_version` matches the running engine, unless
+    `?fresh=true` forces a regeneration.
+
+    `thesis_hash` fingerprints the DECISION only (the three horizon
+    recommendations), not the prose or the scores. Two reports with the same hash
+    express the same investment thesis, which is what "the thesis changed" means in
+    Phase 5 / Phase 9. `engine_version` is deliberately excluded from the hash: a
+    version bump must not masquerade as a change of opinion.
+    """
+
+    __tablename__ = "analysis_reports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    horizon_focus: Mapped[str] = mapped_column(String(16), index=True)
+    engine_version: Mapped[str] = mapped_column(String(16), index=True)
+    thesis_hash: Mapped[str] = mapped_column(String(64), index=True)
+
+    recommendation_short: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    recommendation_medium: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    recommendation_long: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    confidence_short: Mapped[float | None] = mapped_column(Float, nullable=True)
+    confidence_medium: Mapped[float | None] = mapped_column(Float, nullable=True)
+    confidence_long: Mapped[float | None] = mapped_column(Float, nullable=True)
+    risk_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price_at_report: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    report_json: Mapped[str] = mapped_column(Text)  # full InvestmentReport
+    narrative: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class PredictionHistory(Base):
+    """One falsifiable claim, plus its later evaluation.
+
+    Rows are written when a report is generated and updated once `evaluate_at` has
+    passed and a price exists. `analyst` attributes the claim to its author
+    ("cio", "technical", "news", ..., "risk_manager"), which is what makes
+    per-analyst accuracy measurable.
+
+    Outcome columns stay NULL until evaluation: an un-evaluated prediction is never
+    counted as correct, and never as incorrect.
+    """
+
+    __tablename__ = "prediction_history"
+    __table_args__ = (
+        UniqueConstraint(
+            "report_id", "analyst", "horizon", "scenario", name="uq_prediction_claim"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    report_id: Mapped[int] = mapped_column(ForeignKey("analysis_reports.id"), index=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    analyst: Mapped[str] = mapped_column(String(32), index=True)
+    horizon: Mapped[str] = mapped_column(String(16), index=True)
+    scenario: Mapped[str] = mapped_column(String(64), default="direction")
+
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    evaluate_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    engine_version: Mapped[str] = mapped_column(String(16))
+
+    predicted_direction: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    predicted_probability: Mapped[float] = mapped_column(Float)
+    stated_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price_at_prediction: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    price_at_evaluation: Mapped[float | None] = mapped_column(Float, nullable=True)
+    realized_return: Mapped[float | None] = mapped_column(Float, nullable=True)
+    realized_volatility: Mapped[float | None] = mapped_column(Float, nullable=True)
+    realized_direction: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    outcome: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1 happened, 0 did not
+    correct: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    brier_component: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class AnalystPerformance(Base):
+    """Rolling statistics per (analyst, horizon), rebuilt from prediction_history.
+
+    `confidence_multiplier` is the Bayesian recalibration factor the CIO applies to
+    that analyst's stated confidence. It stays 1.0 until enough evaluated samples
+    exist, so a cold system never pretends to have learned anything.
+    """
+
+    __tablename__ = "analyst_performance"
+    __table_args__ = (UniqueConstraint("analyst", "horizon", name="uq_analyst_horizon"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    analyst: Mapped[str] = mapped_column(String(32), index=True)
+    horizon: Mapped[str] = mapped_column(String(16), index=True)
+    sample_size: Mapped[int] = mapped_column(Integer, default=0)
+    hit_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    brier_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    calibration_error: Mapped[float | None] = mapped_column(Float, nullable=True)
+    precision: Mapped[float | None] = mapped_column(Float, nullable=True)
+    recall: Mapped[float | None] = mapped_column(Float, nullable=True)
+    confidence_multiplier: Mapped[float] = mapped_column(Float, default=1.0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CompanyKnowledge(Base):
+    """Accumulated, de-duplicated structured facts about a company.
+
+    `fact_hash` (of category+key+value) is unique per stock, so re-observing the
+    same fact updates `last_seen` instead of inserting a duplicate. `kind` carries
+    the fact/inference/opinion label all the way into storage.
+    """
+
+    __tablename__ = "company_knowledge"
+    __table_args__ = (UniqueConstraint("stock_id", "fact_hash", name="uq_knowledge_fact"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id"), index=True)
+    category: Mapped[str] = mapped_column(String(48), index=True)
+    key: Mapped[str] = mapped_column(String(128))
+    value: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(String(16), default="fact")
+    fact_hash: Mapped[str] = mapped_column(String(64), index=True)
+    source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ThesisChange(Base):
+    """The investment memory: every time a horizon's recommendation flips.
+
+    Stores what changed AND why — the new evidence that appeared and the
+    assumptions that were invalidated — so "June bullish / July neutral /
+    August bearish" can be replayed with its reasoning.
+    """
+
+    __tablename__ = "thesis_changes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    horizon: Mapped[str] = mapped_column(String(16), index=True)
+    changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    previous_report_id: Mapped[int | None] = mapped_column(
+        ForeignKey("analysis_reports.id"), nullable=True
+    )
+    report_id: Mapped[int] = mapped_column(ForeignKey("analysis_reports.id"), index=True)
+
+    from_recommendation: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    to_recommendation: Mapped[str] = mapped_column(String(32))
+    from_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    to_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    from_risk: Mapped[float | None] = mapped_column(Float, nullable=True)
+    to_risk: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    reason: Mapped[str] = mapped_column(Text)
+    new_evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    invalidated_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class MacroIndicator(Base):
     """One observation of one Bank Al-Maghrib series.
 

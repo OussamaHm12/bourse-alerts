@@ -17,6 +17,8 @@ compares outcomes produced by different logic.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Literal
@@ -74,6 +76,41 @@ class Scenario:
     probability: float  # 0..1
     confidence: float  # 0..100 — how sure we are of THAT probability
     rationale: str
+    assumptions: list[str] = field(default_factory=list)
+    direction: str = "flat"  # up | down | flat — what the scenario implies for price
+
+
+@dataclass(frozen=True)
+class HorizonScenarios:
+    """Best / base / worst for ONE horizon. Probabilities sum to 1 by construction."""
+
+    horizon: Horizon
+    best: Scenario
+    base: Scenario
+    worst: Scenario
+    confidence: float
+    assumptions: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class DebateExchange:
+    """One clash between two analysts, and how the CIO resolved it.
+
+    The debate is not decoration: `winner` is the view the CIO actually weighted
+    more heavily, and `resolution` states why — including when the loser's point
+    still constrains the recommendation.
+    """
+
+    horizon: Horizon
+    topic: str
+    bull_analyst: str
+    bull_claim: str
+    bear_analyst: str
+    bear_claim: str
+    winner: str  # bull analyst id | bear analyst id | "unresolved"
+    resolution: str
+    bull_weight: float  # 0..1 — evidence weight the CIO gave each side
+    bear_weight: float
 
 
 @dataclass(frozen=True)
@@ -146,12 +183,14 @@ class CIOReport:
     bear_case: list[Statement] = field(default_factory=list)
     executive_summary: str = ""
     final_verdict: str = ""
+    debate: list[DebateExchange] = field(default_factory=list)
+    calibration_note: str = ""  # how learned analyst reliability shifted the weighting
     version: str = "1.0"
 
 
 @dataclass(frozen=True)
 class InvestmentReport:
-    """The full deliverable: what the API returns and the research DB will store."""
+    """The full deliverable: what the API returns and the research DB stores."""
 
     symbol: str
     company_name: str
@@ -162,9 +201,33 @@ class InvestmentReport:
     risk: RiskReport
     analysts: dict[str, AnalystReport]  # every analyst's raw JSON (drill-down)
     scenarios: list[Scenario]
-    narrative: str | None  # filled later by the Synthesizer; None = template/not yet
+    narrative: str | None  # filled by the Synthesizer; None = not rendered yet
     engine_version: str
     disclaimer: str
+    # Added in Phase 2/4/5/7 — defaulted so older callers keep working.
+    scenarios_by_horizon: dict[str, HorizonScenarios] = field(default_factory=dict)
+    knowledge: dict[str, list[dict]] = field(default_factory=dict)  # category -> facts
+    thesis_history: list[dict] = field(default_factory=list)
+    thesis_hash: str = ""
+    cached: bool = False
+    generated_at: datetime | None = None  # when the STORED report was produced
+
+
+# --------------------------------------------------------------------------- #
+# Thesis fingerprint                                                            #
+# --------------------------------------------------------------------------- #
+
+def thesis_hash(report: InvestmentReport) -> str:
+    """Fingerprint the DECISION, not the prose.
+
+    Only the three horizon recommendations feed the hash. Scores, confidence and
+    wording drift constantly; the thesis has changed only when a recommendation
+    changes. `engine_version` is excluded on purpose — a version bump must not look
+    like a change of opinion.
+    """
+    decision = {h: report.cio.verdicts[h].recommendation for h in sorted(report.cio.verdicts)}
+    payload = json.dumps({"symbol": report.symbol, "verdicts": decision}, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 # --------------------------------------------------------------------------- #
@@ -175,4 +238,11 @@ def report_to_dict(report: InvestmentReport) -> dict:
     """JSON-safe dict of a full report (datetimes → ISO strings)."""
     data = asdict(report)
     data["as_of"] = report.as_of.isoformat()
+    data["generated_at"] = report.generated_at.isoformat() if report.generated_at else None
+    return data
+
+
+def report_from_dict(data: dict) -> dict:
+    """Stored reports are served as plain dicts; this is the identity hook where a
+    future schema migration would upgrade an older payload."""
     return data

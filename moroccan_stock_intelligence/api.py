@@ -12,7 +12,7 @@ from moroccan_stock_intelligence.config import settings
 from moroccan_stock_intelligence.db import get_engine, get_session_factory, init_db
 from moroccan_stock_intelligence.logging_config import configure_logging
 from moroccan_stock_intelligence.scheduler import build_scheduler, run_update_now
-from moroccan_stock_intelligence.repository import save_notification
+from moroccan_stock_intelligence.repository import load_report_history, save_notification
 from moroccan_stock_intelligence.services.investment_analysis import (
     analysis_market_summary,
     analysis_opportunities,
@@ -20,8 +20,14 @@ from moroccan_stock_intelligence.services.investment_analysis import (
     analyze_symbol,
 )
 from moroccan_stock_intelligence.services.push import save_subscription, send_push_to_all
-from moroccan_stock_intelligence.services.research.contracts import report_to_dict
-from moroccan_stock_intelligence.services.research.orchestrator import analyze_report
+from moroccan_stock_intelligence.services.research.knowledge import knowledge_payload
+from moroccan_stock_intelligence.services.research.learning import performance_payload
+from moroccan_stock_intelligence.services.research.orchestrator import (
+    analyze_report,
+    generate_report,
+)
+from moroccan_stock_intelligence.services.research.store import thesis_history_payload
+from moroccan_stock_intelligence.services.synthesis import get_synthesizer
 from moroccan_stock_intelligence.services.views import (
     news_payload,
     notifications_payload,
@@ -216,17 +222,86 @@ def analysis_stock(symbol: str, horizon: str = "short") -> dict:
     return payload
 
 
-# ---- Multi-analyst investment report (new reasoning engine) ----------------
-# Additive and non-breaking: the /api/analysis/* routes above are unchanged. This
-# returns the full InvestmentReport (CIO verdict per horizon + every analyst's
-# structured JSON + risk + scenarios).
+# ---- Multi-analyst investment report (the research platform) ----------------
+# Additive and non-breaking: the /api/analysis/* routes above are unchanged.
+#
+# Served from the research database (the store IS the cache) unless the report is
+# stale or ?fresh=true forces a regeneration.
 @app.get("/api/report/{symbol}")
-def report_stock(symbol: str, horizon: str = "short") -> dict:
+def report_stock(symbol: str, horizon: str = "short", fresh: bool = False) -> dict:
     with SessionFactory() as session:
-        report = analyze_report(session, symbol, _check_horizon(horizon))
+        report = analyze_report(session, symbol, _check_horizon(horizon), fresh=fresh)
     if report is None:
         raise HTTPException(status_code=404, detail="symbol not found")
-    return report_to_dict(report)
+    return report
+
+
+@app.get("/api/report/{symbol}/narrative")
+def report_narrative(symbol: str, horizon: str = "short") -> dict:
+    """The written research note. Deterministic template unless an LLM is enabled;
+    an LLM narrative that fails validation falls back to the template."""
+    with SessionFactory() as session:
+        report = generate_report(session, symbol, _check_horizon(horizon))
+        if report is None:
+            raise HTTPException(status_code=404, detail="symbol not found")
+        synthesizer = get_synthesizer()
+        narrative = synthesizer.render(report)
+    return {
+        "symbol": report.symbol,
+        "horizon": horizon,
+        "renderer": synthesizer.name,
+        "narrative": narrative,
+        "engine_version": report.engine_version,
+        "disclaimer": report.disclaimer,
+    }
+
+
+@app.get("/api/reports/history/{symbol}")
+def reports_history(symbol: str, limit: int = 30) -> dict:
+    """Recommendation timeline + why the thesis changed (the investment memory)."""
+    with SessionFactory() as session:
+        rows = load_report_history(session, symbol, limit=limit)
+        changes = thesis_history_payload(session, symbol, limit=limit)
+    return {
+        "symbol": symbol.upper(),
+        "count": len(rows),
+        "timeline": [
+            {
+                "generated_at": row.generated_at.isoformat() if row.generated_at else None,
+                "engine_version": row.engine_version,
+                "thesis_hash": row.thesis_hash,
+                "horizon_focus": row.horizon_focus,
+                "recommendations": {
+                    "short": row.recommendation_short,
+                    "medium": row.recommendation_medium,
+                    "long": row.recommendation_long,
+                },
+                "confidence": {
+                    "short": row.confidence_short,
+                    "medium": row.confidence_medium,
+                    "long": row.confidence_long,
+                },
+                "risk_score": row.risk_score,
+                "price": row.price_at_report,
+            }
+            for row in rows
+        ],
+        "thesis_changes": changes,
+    }
+
+
+@app.get("/api/knowledge/{symbol}")
+def knowledge_stock(symbol: str) -> dict:
+    """Everything the platform has accumulated about this company."""
+    with SessionFactory() as session:
+        return knowledge_payload(session, symbol)
+
+
+@app.get("/api/performance")
+def performance() -> dict:
+    """How accurate the platform's own past predictions turned out to be."""
+    with SessionFactory() as session:
+        return performance_payload(session)
 
 
 # The PWA static files are mounted last so the API routes above take priority.

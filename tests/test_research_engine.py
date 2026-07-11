@@ -15,6 +15,9 @@ import json
 import math
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
+from moroccan_stock_intelligence.db import get_engine, get_session_factory, init_db
 from moroccan_stock_intelligence.services.analytics import MetricSet
 from moroccan_stock_intelligence.services.horizon_strategy import NewsContext
 from moroccan_stock_intelligence.services.portfolio import Portfolio
@@ -36,6 +39,17 @@ from moroccan_stock_intelligence.services.scoring import score_opportunity
 from moroccan_stock_intelligence.services.analysts import cio
 
 RECOMMENDATIONS = set(cio.RECOMMENDATION_LABELS_FR)
+
+
+@pytest.fixture
+def session(tmp_path):
+    """An empty DB: the engine must work with no stored history at all."""
+    engine = get_engine(f"sqlite:///{(tmp_path / 'engine.db').as_posix()}")
+    init_db(engine)
+    factory = get_session_factory(engine)
+    with factory() as s:
+        yield s
+    engine.dispose()
 
 
 def _metric() -> MetricSet:
@@ -83,9 +97,9 @@ def _gathered(metric: MetricSet) -> GatheredState:
     )
 
 
-def test_engine_runs_and_reports_are_valid():
+def test_engine_runs_and_reports_are_valid(session):
     metric = _metric()
-    report = run(_context(metric), _gathered(metric), "short")
+    report = run(session, _context(metric), _gathered(metric), "short")
     d = report_to_dict(report)
 
     expected = {"technical", "market_structure", "news", "historical_behaviour",
@@ -96,13 +110,15 @@ def test_engine_runs_and_reports_are_valid():
     for rep in d["analysts"].values():
         assert "recommendation" not in rep
 
-    # JSON-serialisable for the API and the future research DB.
+    # JSON-serialisable for the API and the research DB.
     assert json.dumps(d)
+    assert d["thesis_hash"]
+    assert d["engine_version"]
 
 
-def test_only_cio_recommends_and_covers_every_horizon():
+def test_only_cio_recommends_and_covers_every_horizon(session):
     metric = _metric()
-    report = run(_context(metric), _gathered(metric), "medium")
+    report = run(session, _context(metric), _gathered(metric), "medium")
     assert set(report.cio.verdicts) == {"short", "medium", "long"}
     for verdict in report.cio.verdicts.values():
         assert verdict.recommendation in RECOMMENDATIONS
@@ -110,9 +126,9 @@ def test_only_cio_recommends_and_covers_every_horizon():
         assert 0 <= verdict.score <= 100
 
 
-def test_unavailable_analysts_are_honest_not_fabricated():
+def test_unavailable_analysts_are_honest_not_fabricated(session):
     metric = _metric()
-    report = run(_context(metric), _gathered(metric), "long")
+    report = run(session, _context(metric), _gathered(metric), "long")
     for name in ("company", "fundamental", "macro"):
         rep = report.analysts[name]
         assert rep.confidence == 0.0

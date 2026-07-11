@@ -9,14 +9,19 @@ from sqlalchemy.orm import Session
 
 from moroccan_stock_intelligence.models import (
     Alert,
+    AnalysisReport,
+    AnalystPerformance,
+    CompanyKnowledge,
     CompanyProfile,
     Fundamental,
     MacroIndicator,
     News,
     Notification,
+    PredictionHistory,
     Price,
     Signal,
     Stock,
+    ThesisChange,
 )
 from moroccan_stock_intelligence.schemas import NewsItem, StockSnapshot
 
@@ -349,6 +354,303 @@ def load_latest_macro(session: Session) -> dict[str, dict]:
             },
         )
     return latest
+
+
+# --------------------------------------------------------------------------- #
+# Research database: reports, predictions, performance, knowledge, thesis.      #
+# --------------------------------------------------------------------------- #
+
+def save_analysis_report(
+    session: Session,
+    stock_id: int,
+    symbol: str,
+    horizon_focus: str,
+    engine_version: str,
+    thesis_hash: str,
+    report_json: str,
+    verdicts: dict[str, dict],
+    risk_score: float | None,
+    price_at_report: float | None,
+    narrative: str | None = None,
+) -> AnalysisReport:
+    """Persist a generated report. Always inserts: reports are an append-only log."""
+    row = AnalysisReport(
+        stock_id=stock_id,
+        symbol=symbol.upper(),
+        generated_at=datetime.now(UTC),
+        horizon_focus=horizon_focus,
+        engine_version=engine_version,
+        thesis_hash=thesis_hash,
+        recommendation_short=verdicts.get("short", {}).get("recommendation"),
+        recommendation_medium=verdicts.get("medium", {}).get("recommendation"),
+        recommendation_long=verdicts.get("long", {}).get("recommendation"),
+        confidence_short=verdicts.get("short", {}).get("confidence"),
+        confidence_medium=verdicts.get("medium", {}).get("confidence"),
+        confidence_long=verdicts.get("long", {}).get("confidence"),
+        risk_score=risk_score,
+        price_at_report=price_at_report,
+        report_json=report_json,
+        narrative=narrative,
+    )
+    session.add(row)
+    session.flush()  # id needed for predictions / thesis changes
+    return row
+
+
+def load_cached_report(
+    session: Session,
+    symbol: str,
+    horizon: str,
+    engine_version: str,
+    max_age_seconds: int,
+) -> AnalysisReport | None:
+    """Newest report for (symbol, horizon) that is fresh enough AND was produced by
+    the running engine. A version bump therefore invalidates the cache implicitly —
+    we never serve a report whose logic no longer exists.
+    """
+    row = session.scalars(
+        select(AnalysisReport)
+        .where(
+            AnalysisReport.symbol == symbol.upper(),
+            AnalysisReport.horizon_focus == horizon,
+            AnalysisReport.engine_version == engine_version,
+        )
+        .order_by(AnalysisReport.generated_at.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return None
+    generated = row.generated_at
+    if generated is None:
+        return None
+    if generated.tzinfo is None:
+        generated = generated.replace(tzinfo=UTC)
+    if (datetime.now(UTC) - generated).total_seconds() > max_age_seconds:
+        return None
+    return row
+
+
+def load_report_history(session: Session, symbol: str, limit: int = 50) -> list[AnalysisReport]:
+    return list(
+        session.scalars(
+            select(AnalysisReport)
+            .where(AnalysisReport.symbol == symbol.upper())
+            .order_by(AnalysisReport.generated_at.desc())
+            .limit(limit)
+        ).all()
+    )
+
+
+def load_last_report_before(
+    session: Session, symbol: str, horizon: str, before_id: int
+) -> AnalysisReport | None:
+    """The previous report for this symbol+horizon: the baseline a thesis change is
+    measured against."""
+    return session.scalars(
+        select(AnalysisReport)
+        .where(
+            AnalysisReport.symbol == symbol.upper(),
+            AnalysisReport.horizon_focus == horizon,
+            AnalysisReport.id < before_id,
+        )
+        .order_by(AnalysisReport.id.desc())
+        .limit(1)
+    ).first()
+
+
+def save_prediction(
+    session: Session,
+    report_id: int,
+    stock_id: int,
+    symbol: str,
+    analyst: str,
+    horizon: str,
+    scenario: str,
+    generated_at: datetime,
+    evaluate_at: datetime,
+    engine_version: str,
+    predicted_direction: str | None,
+    predicted_probability: float,
+    stated_confidence: float | None,
+    price_at_prediction: float | None,
+) -> PredictionHistory | None:
+    """Record one falsifiable claim. None if this exact claim already exists."""
+    existing = session.scalar(
+        select(PredictionHistory).where(
+            PredictionHistory.report_id == report_id,
+            PredictionHistory.analyst == analyst,
+            PredictionHistory.horizon == horizon,
+            PredictionHistory.scenario == scenario,
+        )
+    )
+    if existing is not None:
+        return None
+    row = PredictionHistory(
+        report_id=report_id,
+        stock_id=stock_id,
+        symbol=symbol.upper(),
+        analyst=analyst,
+        horizon=horizon,
+        scenario=scenario,
+        generated_at=generated_at,
+        evaluate_at=evaluate_at,
+        engine_version=engine_version,
+        predicted_direction=predicted_direction,
+        predicted_probability=predicted_probability,
+        stated_confidence=stated_confidence,
+        price_at_prediction=price_at_prediction,
+    )
+    session.add(row)
+    return row
+
+
+def load_due_predictions(session: Session, now: datetime | None = None) -> list[PredictionHistory]:
+    """Predictions whose evaluation date has passed and which carry an anchor price.
+    Un-evaluated rows stay NULL rather than being scored as wrong."""
+    moment = now or datetime.now(UTC)
+    return list(
+        session.scalars(
+            select(PredictionHistory).where(
+                PredictionHistory.evaluated_at.is_(None),
+                PredictionHistory.evaluate_at <= moment,
+                PredictionHistory.price_at_prediction.is_not(None),
+            )
+        ).all()
+    )
+
+
+def load_evaluated_predictions(
+    session: Session, analyst: str | None = None, horizon: str | None = None
+) -> list[PredictionHistory]:
+    query = select(PredictionHistory).where(PredictionHistory.evaluated_at.is_not(None))
+    if analyst:
+        query = query.where(PredictionHistory.analyst == analyst)
+    if horizon:
+        query = query.where(PredictionHistory.horizon == horizon)
+    return list(session.scalars(query).all())
+
+
+def upsert_analyst_performance(
+    session: Session, analyst: str, horizon: str, stats: dict
+) -> AnalystPerformance:
+    row = session.scalar(
+        select(AnalystPerformance).where(
+            AnalystPerformance.analyst == analyst, AnalystPerformance.horizon == horizon
+        )
+    )
+    if row is None:
+        row = AnalystPerformance(analyst=analyst, horizon=horizon)
+        session.add(row)
+    for key, value in stats.items():
+        setattr(row, key, value)
+    row.updated_at = datetime.now(UTC)
+    return row
+
+
+def load_analyst_performance(session: Session) -> dict[tuple[str, str], dict]:
+    """(analyst, horizon) -> stats. The CIO uses this to weight proven analysts."""
+    return {
+        (row.analyst, row.horizon): {
+            "sample_size": row.sample_size,
+            "hit_rate": row.hit_rate,
+            "brier_score": row.brier_score,
+            "calibration_error": row.calibration_error,
+            "precision": row.precision,
+            "recall": row.recall,
+            "confidence_multiplier": row.confidence_multiplier,
+        }
+        for row in session.scalars(select(AnalystPerformance)).all()
+    }
+
+
+def upsert_knowledge_fact(
+    session: Session,
+    stock_id: int,
+    category: str,
+    key: str,
+    value: str,
+    fact_hash: str,
+    kind: str = "fact",
+    source: str | None = None,
+    source_url: str | None = None,
+    observed_at: datetime | None = None,
+) -> tuple[CompanyKnowledge, bool]:
+    """Insert a fact, or refresh `last_seen` if we already know it.
+
+    Returns (row, created). De-duplication is the point: the same fact re-observed
+    every week must not accumulate rows.
+    """
+    row = session.scalar(
+        select(CompanyKnowledge).where(
+            CompanyKnowledge.stock_id == stock_id, CompanyKnowledge.fact_hash == fact_hash
+        )
+    )
+    if row is not None:
+        row.value = value
+        row.last_seen = datetime.now(UTC)
+        return row, False
+    row = CompanyKnowledge(
+        stock_id=stock_id,
+        category=category,
+        key=key,
+        value=value,
+        kind=kind,
+        fact_hash=fact_hash,
+        source=source,
+        source_url=source_url,
+        observed_at=observed_at,
+    )
+    session.add(row)
+    # Flush so a second observation of the same fact within one transaction finds
+    # this row instead of racing it into a UNIQUE violation.
+    session.flush()
+    return row, True
+
+
+def load_company_knowledge(session: Session, symbol: str) -> dict[str, list[dict]]:
+    """category -> facts, most recently seen first."""
+    rows = (
+        session.execute(
+            select(CompanyKnowledge)
+            .join(Stock, CompanyKnowledge.stock_id == Stock.id)
+            .where(Stock.symbol == symbol.upper())
+            .order_by(CompanyKnowledge.category, CompanyKnowledge.last_seen.desc())
+        )
+        .scalars()
+        .all()
+    )
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        grouped.setdefault(row.category, []).append(
+            {
+                "key": row.key,
+                "value": row.value,
+                "kind": row.kind,
+                "source": row.source,
+                "source_url": row.source_url,
+                "observed_at": row.observed_at.isoformat() if row.observed_at else None,
+                "first_seen": row.first_seen.isoformat() if row.first_seen else None,
+                "last_seen": row.last_seen.isoformat() if row.last_seen else None,
+            }
+        )
+    return grouped
+
+
+def record_thesis_change(session: Session, **fields) -> ThesisChange:
+    row = ThesisChange(**fields)
+    session.add(row)
+    return row
+
+
+def load_thesis_changes(
+    session: Session, symbol: str, horizon: str | None = None, limit: int = 30
+) -> list[ThesisChange]:
+    query = select(ThesisChange).where(ThesisChange.symbol == symbol.upper())
+    if horizon:
+        query = query.where(ThesisChange.horizon == horizon)
+    return list(
+        session.scalars(query.order_by(ThesisChange.changed_at.desc()).limit(limit)).all()
+    )
 
 
 def load_price_frame(session: Session) -> pd.DataFrame:
