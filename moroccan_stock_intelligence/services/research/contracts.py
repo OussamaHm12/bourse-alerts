@@ -240,9 +240,3 @@ def report_to_dict(report: InvestmentReport) -> dict:
     data["as_of"] = report.as_of.isoformat()
     data["generated_at"] = report.generated_at.isoformat() if report.generated_at else None
     return data
-
-
-def report_from_dict(data: dict) -> dict:
-    """Stored reports are served as plain dicts; this is the identity hook where a
-    future schema migration would upgrade an older payload."""
-    return data

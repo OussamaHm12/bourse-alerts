@@ -22,9 +22,6 @@ from moroccan_stock_intelligence.services.digest import (
     build_push_payload,
     html_to_text,
 )
-from moroccan_stock_intelligence.services.investment_analysis import (
-    dispatch_analysis_notifications,
-)
 from moroccan_stock_intelligence.services.portfolio import evaluate_portfolio, load_portfolio
 from moroccan_stock_intelligence.services.push import send_push_to_all
 from moroccan_stock_intelligence.services.telegram import send_telegram_message
@@ -50,10 +47,11 @@ def _digest_job(session_factory, period_label: str) -> None:  # noqa: ANN001
             send_telegram_message(message, parse_mode="HTML")
             title, body = build_push_payload(period_label, holdings)
             send_push_to_all(session, title, body, "/")
-            try:  # intelligent analysis alerts are best-effort; never break the digest
-                dispatch_analysis_notifications(session, metrics, scores, portfolio)
-            except Exception:  # noqa: BLE001
-                LOG.exception("analysis_notifications_failed period=%s", period_label)
+            # NOTE: the old event-based analysis alerts used to fire here. They are
+            # gone: intelligent per-symbol notification is now thesis-based and owned
+            # solely by _research_job. Firing both would notify the owner twice — once
+            # because a price moved, once because the thesis changed — which is exactly
+            # the spam the thesis rule exists to prevent.
             LOG.info("digest_job_done period=%s holdings=%s", period_label, len(holdings))
         except Exception:  # noqa: BLE001 - a scheduled job must never crash the scheduler.
             LOG.exception("digest_job_failed period=%s", period_label)
@@ -80,10 +78,8 @@ def _intraday_job(session_factory, period_label: str) -> None:  # noqa: ANN001
             send_telegram_message(message, parse_mode="HTML")
             title, body = build_push_payload(period_label, holdings)
             send_push_to_all(session, title, body, "/")
-            try:  # intelligent analysis alerts are best-effort; never break the update
-                dispatch_analysis_notifications(session, metrics, scores, portfolio)
-            except Exception:  # noqa: BLE001
-                LOG.exception("analysis_notifications_failed period=%s", period_label)
+            # Intelligent alerts are thesis-based now and belong to _research_job only
+            # (see _digest_job). The intraday job keeps the urgent-crash safety net above.
             LOG.info("intraday_job_done period=%s holdings=%s", period_label, len(holdings))
         except Exception:  # noqa: BLE001 - a scheduled job must never crash the scheduler.
             LOG.exception("intraday_job_failed period=%s", period_label)

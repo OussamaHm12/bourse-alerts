@@ -13,16 +13,12 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from moroccan_stock_intelligence.config import settings
-from moroccan_stock_intelligence.models import Stock
 from moroccan_stock_intelligence.repository import (
-    create_alert_once,
     load_history_depths,
     load_recent_news,
-    save_notification,
 )
 from moroccan_stock_intelligence.services.analytics import MetricSet
 from moroccan_stock_intelligence.services.horizon_strategy import (
@@ -31,17 +27,14 @@ from moroccan_stock_intelligence.services.horizon_strategy import (
     HorizonAssessment,
     NewsContext,
     assess_all,
-    assess_short,
     compute_confidence,
     compute_risk,
 )
 from moroccan_stock_intelligence.services.portfolio import (
     HoldingEvaluation,
-    Portfolio,
     evaluate_portfolio,
     load_portfolio,
 )
-from moroccan_stock_intelligence.services.push import send_push_to_all
 from moroccan_stock_intelligence.services.scoring import ScoreResult
 from moroccan_stock_intelligence.services.views import compute_state
 
@@ -669,107 +662,7 @@ def analysis_market_summary(session: Session) -> dict:
         "disclaimer": DISCLAIMER,
     }
 
-
-# --------------------------------------------------------------------------- #
-# Intelligent notifications (called from the scheduler jobs)                   #
-# --------------------------------------------------------------------------- #
-
-def dispatch_analysis_notifications(
-    session: Session,
-    metrics: list[MetricSet],
-    scores: dict[str, ScoreResult],
-    portfolio: Portfolio,
-) -> int:
-    """Push intelligent, deduplicated analysis alerts (web push + in-app inbox).
-
-    Rules (all once per symbol per day via the alerts table, max
-    MAX_AI_PUSHES_PER_RUN per scheduled run, held positions first):
-    - held position with SELL advice or risk >= AI_HOLDING_RISK
-    - held position with fresh negative official news (< 24h)
-    - new short-term opportunity: score >= AI_OPPORTUNITY_SCORE with enough
-      confidence and contained risk (max 2 per run)
-    Telegram is intentionally NOT used here: the digests own that channel.
-    """
-    depths = load_history_depths(session)
-    news_contexts = build_news_contexts(session)
-    stocks = {stock.symbol: stock for stock in session.scalars(select(Stock)).all()}
-    metrics_by_symbol = {metric.symbol: metric for metric in metrics}
-    holdings = {
-        evaluation.symbol: evaluation
-        for evaluation in evaluate_portfolio(portfolio, metrics_by_symbol, scores)
-    }
-    now_key = datetime.now(UTC).strftime("%Y-%m-%d")
-    candidates: list[tuple[str, str, str, str, str]] = []  # symbol, event_key, type, title, body
-
-    for symbol, evaluation in holdings.items():
-        metric = metrics_by_symbol.get(symbol)
-        if metric is None:
-            continue
-        context = news_contexts.get(symbol, NewsContext())
-        risk, _ = compute_risk(metric, context, depths.get(symbol, 0))
-        if evaluation.advice == "SELL" or risk >= AI_HOLDING_RISK:
-            candidates.append(
-                (
-                    symbol,
-                    f"{symbol}-ai-holding-{now_key}",
-                    "ai_holding_risk",
-                    f"⚠️ Position à surveiller : {symbol}",
-                    f"Risque {risk:.0f}/100 · {evaluation.advice_reason}",
-                )
-            )
-        elif context.fresh_negative and context.latest_title:
-            candidates.append(
-                (
-                    symbol,
-                    f"{symbol}-ai-news-{now_key}",
-                    "ai_news_shift",
-                    f"📰 Actualité à vérifier : {symbol}",
-                    f"Actualité récente défavorable : {context.latest_title[:90]}",
-                )
-            )
-
-    ranked: list[tuple[float, MetricSet, float, str]] = []
-    for metric in metrics:
-        if metric.symbol in holdings:
-            continue
-        context = news_contexts.get(metric.symbol, NewsContext())
-        history = depths.get(metric.symbol, 0)
-        assessment = assess_short(metric, context)
-        confidence, _ = compute_confidence(assessment, history)
-        risk, _ = compute_risk(metric, context, history)
-        if (
-            assessment.score >= AI_OPPORTUNITY_SCORE
-            and confidence >= AI_OPPORTUNITY_CONFIDENCE
-            and risk < AI_OPPORTUNITY_MAX_RISK
-        ):
-            top = assessment.positives[0] if assessment.positives else "Configuration favorable"
-            ranked.append((assessment.score, metric, confidence, top))
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    for score_value, metric, confidence, top in ranked[:2]:
-        candidates.append(
-            (
-                metric.symbol,
-                f"{metric.symbol}-ai-opportunity-{now_key}",
-                "ai_opportunity",
-                f"🎯 Opportunité court terme : {metric.symbol}",
-                f"Score {score_value:.0f}/100 (confiance {confidence:.0f}) · {top}",
-            )
-        )
-
-    sent = 0
-    for symbol, event_key, alert_type, title, body in candidates:
-        if sent >= MAX_AI_PUSHES_PER_RUN:
-            break
-        stock = stocks.get(symbol)
-        if stock is None:
-            continue
-        alert = create_alert_once(session, stock.id, event_key, alert_type, f"{title}\n{body}")
-        if alert is None:
-            continue  # already notified today
-        save_notification(session, "analysis", title, body)
-        send_push_to_all(session, title, body, "/")
-        alert.sent = 1
-        sent += 1
-    session.commit()
-    LOG.info("analysis_notifications_sent count=%s candidates=%s", sent, len(candidates))
-    return sent
+# NOTE: dispatch_analysis_notifications() lived here. It was event-based (price
+# crashed, volume spiked) and fired on every digest run. It is superseded by
+# services/research/notifications.py, which notifies only when the investment
+# THESIS changes. Keeping both would double-notify the owner.
