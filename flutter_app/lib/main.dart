@@ -628,7 +628,10 @@ class _AnalysisPageState extends State<AnalysisPage> {
   String _horizon = 'short';
   List _opps = [];
   List _holdings = [];
+  List _sectors = [];
   String? _note;
+  Map<String, dynamic>? _market;
+  Map<String, dynamic>? _perf;
   bool _loading = true;
 
   @override
@@ -643,12 +646,18 @@ class _AnalysisPageState extends State<AnalysisPage> {
       final results = await Future.wait([
         api('api/analysis/opportunities?horizon=$_horizon&min_score=0&limit=15'),
         api('api/analysis/portfolio'),
+        api('api/analysis/market-summary'),
+        api('api/sectors'),
+        api('api/performance'),
       ]);
       final pf = results[1] as Map<String, dynamic>;
       setState(() {
         _opps = (results[0]['opportunities'] as List?) ?? [];
         _holdings = (pf['holdings'] as List?) ?? [];
         _note = pf['note'] as String?;
+        _market = results[2] as Map<String, dynamic>?;
+        _sectors = (results[3]['sectors'] as List?) ?? [];
+        _perf = results[4] as Map<String, dynamic>?;
         _loading = false;
       });
     } catch (_) {
@@ -700,15 +709,23 @@ class _AnalysisPageState extends State<AnalysisPage> {
                 child: ListView(
                   padding: const EdgeInsets.fromLTRB(14, 6, 14, 24),
                   children: [
+                    if (_market != null) ...[
+                      sectionTitle('Humeur du marché'),
+                      _marketMoodCard(_market!).enter(0),
+                    ],
+                    if (_sectors.isNotEmpty) ...[
+                      sectionTitle('Carte des secteurs'),
+                      _sectorHeatmap(_sectors).enter(1),
+                    ],
                     if (_holdings.isNotEmpty) ...[
-                      sectionTitle('Mon portefeuille — analyse'),
+                      sectionTitle('Santé du portefeuille'),
                       if (_note != null)
                         Padding(
                           padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
                           child: Text(_note!, style: const TextStyle(color: muted, fontSize: 12, height: 1.4)),
                         ),
                       ..._holdings.asMap().entries.map(
-                          (e) => _aHoldingCard(context, e.value as Map<String, dynamic>).enter(e.key)),
+                          (e) => _aHoldingCard(context, e.value as Map<String, dynamic>).enter(e.key + 2)),
                     ],
                     sectionTitle('Meilleures opportunités — ${_horizonLabels[_horizon]!.toLowerCase()}'),
                     if (_opps.isEmpty)
@@ -717,7 +734,11 @@ class _AnalysisPageState extends State<AnalysisPage> {
                               style: TextStyle(color: muted)))
                     else
                       ..._opps.asMap().entries.map((e) =>
-                          _aOppCard(context, e.value as Map<String, dynamic>, _horizon).enter(e.key + 1)),
+                          _aOppCard(context, e.value as Map<String, dynamic>, _horizon).enter(e.key + 3)),
+                    if (_perf != null) ...[
+                      sectionTitle('Précision des prédictions'),
+                      _accuracyCard(_perf!),
+                    ],
                   ],
                 ),
               ),
@@ -784,6 +805,141 @@ Widget _argLine(String text, Color color) => Padding(
       ]),
     );
 
+// ---- market mood ----
+Color _regimeColor(String r) => switch (r) {
+      'haussier' => green,
+      'baissier' => red,
+      'neutre' => amber,
+      _ => muted,
+    };
+
+Widget _marketMoodCard(Map<String, dynamic> m) {
+  final regime = '${m['regime'] ?? 'indéterminé'}';
+  final breadth = (m['breadth_above_ma50_pct'] as num?)?.toDouble();
+  final adv = (m['advancers'] as num?)?.toInt() ?? 0;
+  final dec = (m['decliners'] as num?)?.toInt() ?? 0;
+  final total = (adv + dec) == 0 ? 1 : adv + dec;
+  return glassCard(
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(color: _regimeColor(regime), shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 8),
+        Text(regime.toUpperCase(),
+            style: TextStyle(
+                fontWeight: FontWeight.w800,
+                fontSize: 14,
+                letterSpacing: 0.5,
+                color: _regimeColor(regime))),
+        const Spacer(),
+        if (breadth != null)
+          Text('${breadth.round()}% > MM50',
+              style: const TextStyle(color: muted, fontSize: 11, fontWeight: FontWeight.w600)),
+      ]),
+      const SizedBox(height: 10),
+      // advancers vs decliners
+      ClipRRect(
+        borderRadius: BorderRadius.circular(6),
+        child: Row(children: [
+          Expanded(flex: adv, child: Container(height: 8, color: green)),
+          Expanded(flex: dec, child: Container(height: 8, color: red)),
+        ]),
+      ),
+      const SizedBox(height: 5),
+      Row(children: [
+        Text('$adv en hausse',
+            style: const TextStyle(color: green, fontSize: 11, fontWeight: FontWeight.w700)),
+        const Spacer(),
+        Text('$dec en baisse',
+            style: const TextStyle(color: red, fontSize: 11, fontWeight: FontWeight.w700)),
+      ]),
+      const SizedBox(height: 8),
+      Text('${m['summary'] ?? ''}',
+          style: const TextStyle(color: muted, fontSize: 12, height: 1.45)),
+      if (total == 1 && adv == 0 && dec == 0)
+        const Padding(
+          padding: EdgeInsets.only(top: 4),
+          child: Text('Aucune variation collectée aujourd\'hui.',
+              style: TextStyle(color: muted, fontSize: 11)),
+        ),
+    ]),
+  );
+}
+
+// ---- sector heatmap ----
+Widget _sectorHeatmap(List sectors) {
+  final rated = sectors
+      .where((s) => (s as Map)['avg_momentum_30d'] != null)
+      .toList();
+  if (rated.isEmpty) {
+    return glassCard(
+        child: const Text('Momentum sectoriel indisponible : historique encore trop court.',
+            style: TextStyle(color: muted, fontSize: 12)));
+  }
+  return glassCard(
+    child: Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      children: rated.map((s) {
+        final m = s as Map<String, dynamic>;
+        final mom = (m['avg_momentum_30d'] as num).toDouble();
+        // Intensity scales with the size of the move, colour with its direction.
+        final strength = (mom.abs() / 8).clamp(0.12, 0.85);
+        final color = mom > 0.5 ? green : (mom < -0.5 ? red : muted);
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: strength * 0.32),
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(color: color.withValues(alpha: strength)),
+          ),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('${m['sector']}',
+                style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700)),
+            Text('${mom >= 0 ? '+' : ''}${mom.toStringAsFixed(1)}%',
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: color)),
+          ]),
+        );
+      }).toList(),
+    ),
+  );
+}
+
+// ---- historical prediction accuracy (the learning engine, made visible) ----
+Widget _accuracyCard(Map<String, dynamic> p) {
+  final analysts = (p['analysts'] as Map<String, dynamic>?) ?? {};
+  final evaluated = (p['total_evaluated'] as num?)?.toInt() ?? 0;
+  return glassCard(
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('${p['note'] ?? ''}',
+          style: const TextStyle(color: muted, fontSize: 12, height: 1.45)),
+      if (evaluated > 0) ...[
+        const SizedBox(height: 10),
+        ...analysts.entries.map((e) {
+          final horizons = e.value as Map<String, dynamic>;
+          final short = (horizons['short'] as Map<String, dynamic>?) ?? {};
+          final hit = (short['hit_rate'] as num?)?.toDouble();
+          final n = (short['sample_size'] as num?)?.toInt() ?? 0;
+          if (hit == null || n == 0) return const SizedBox.shrink();
+          return _gaugeRow(_analystNames[e.key] ?? e.key, hit * 100,
+              hit >= 0.55 ? green : (hit >= 0.45 ? amber : red));
+        }),
+      ],
+      const SizedBox(height: 6),
+      Text('Méthode : ${p['method'] ?? ''}',
+          style: const TextStyle(color: muted, fontSize: 10, height: 1.4)),
+    ]),
+  );
+}
+
+// ------------------------ AI research report sheet ------------------------- //
+// Driven by /api/report/{symbol}: the full institutional note — verdict by
+// horizon, thesis, bull vs bear, the analyst debate, risk radar, scenarios,
+// confidence breakdown, company knowledge and the history of the thesis itself.
+
 void showAnalysisSheet(BuildContext context, String symbol, String horizon) {
   showModalBottomSheet(
     context: context,
@@ -791,14 +947,21 @@ void showAnalysisSheet(BuildContext context, String symbol, String horizon) {
     backgroundColor: bg,
     shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
     builder: (c) => DraggableScrollableSheet(
-      initialChildSize: 0.92,
-      maxChildSize: 0.96,
+      initialChildSize: 0.94,
+      maxChildSize: 0.97,
       expand: false,
       builder: (c, ctrl) => FutureBuilder(
-        future: api('api/analysis/$symbol?horizon=$horizon'),
+        future: api('api/report/$symbol?horizon=$horizon'),
         builder: (c, snap) {
+          if (snap.hasError) {
+            return Center(
+                child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text('Rapport indisponible pour $symbol.',
+                        style: const TextStyle(color: muted))));
+          }
           if (!snap.hasData) return const Center(child: CircularProgressIndicator(color: accent));
-          return _analysisBody(snap.data as Map<String, dynamic>, ctrl);
+          return _reportBody(snap.data as Map<String, dynamic>, ctrl, horizon);
         },
       ),
     ),
@@ -807,132 +970,463 @@ void showAnalysisSheet(BuildContext context, String symbol, String horizon) {
 
 Color _hCol(num? v) => v == null ? muted : (v >= 65 ? green : (v >= 50 ? accent : muted));
 
-Widget _analysisBody(Map<String, dynamic> d, ScrollController ctrl) {
-  final ex = d['explainability'] as Map<String, dynamic>? ?? {};
-  final scores = d['scores'] as Map<String, dynamic>? ?? {};
-  final pf = d['portfolio'] as Map<String, dynamic>?;
-  final bullish = (d['bullish'] as List?) ?? [];
-  final bearish = (d['bearish'] as List?) ?? [];
-  final missing = (ex['missing_data'] as List?) ?? [];
-  final dataUsed = (ex['data_used'] as List?) ?? [];
-  final watchNext = (d['watch_next'] as List?) ?? [];
-  return ListView(controller: ctrl, padding: const EdgeInsets.fromLTRB(16, 10, 16, 28), children: [
+Color _kindColor(String kind) => switch (kind) {
+      'fact' => accent,
+      'inference' => amber,
+      'opinion' => muted,
+      _ => muted,
+    };
+
+Widget _reportBody(Map<String, dynamic> d, ScrollController ctrl, String horizon) {
+  final cio = (d['cio'] as Map<String, dynamic>?) ?? {};
+  final risk = (d['risk'] as Map<String, dynamic>?) ?? {};
+  final analysts = (d['analysts'] as Map<String, dynamic>?) ?? {};
+  final verdicts = (cio['verdicts'] as Map<String, dynamic>?) ?? {};
+  final focus = (verdicts[horizon] as Map<String, dynamic>?) ?? {};
+  final bull = (cio['bull_case'] as List?) ?? [];
+  final bear = (cio['bear_case'] as List?) ?? [];
+  final debate = (cio['debate'] as List?) ?? [];
+  final contradictions = (cio['contradictions'] as List?) ?? [];
+  final scenarios = (d['scenarios_by_horizon'] as Map<String, dynamic>?) ?? {};
+  final knowledge = (d['knowledge'] as Map<String, dynamic>?) ?? {};
+  final thesisHistory = (d['thesis_history'] as List?) ?? [];
+  final dims = (risk['dimensions'] as Map<String, dynamic>?) ?? {};
+  final drivers = (risk['drivers'] as List?) ?? [];
+  final cached = d['cached'] == true;
+
+  return ListView(controller: ctrl, padding: const EdgeInsets.fromLTRB(16, 10, 16, 30), children: [
     Center(
         child: Container(
             width: 40,
             height: 4,
             margin: const EdgeInsets.only(bottom: 14),
             decoration: BoxDecoration(color: line, borderRadius: BorderRadius.circular(2)))),
-    Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+
+    // ---- header ----
+    Row(children: [
       Expanded(
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('${d['symbol']}', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
-          Text('${d['company_name'] ?? ''}', style: const TextStyle(color: muted, fontSize: 13)),
+          Text('${d['company_name'] ?? ''}${d['sector'] != null ? ' · ${d['sector']}' : ''}',
+              style: const TextStyle(color: muted, fontSize: 12.5)),
         ]),
       ),
-      badge(d['recommendation_label'] ?? '', recColor('${d['recommendation']}')),
+      badge('${focus['recommendation_label'] ?? ''}', recColor('${focus['recommendation']}')),
     ]),
-    const SizedBox(height: 10),
-    Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-      Text('${fmt(d['price'])}',
-          style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800, letterSpacing: -1)),
-      const SizedBox(width: 6),
-      const Padding(
-          padding: EdgeInsets.only(bottom: 4),
-          child: Text('MAD', style: TextStyle(color: muted, fontSize: 12))),
-      const Spacer(),
-      Text('${d['horizon_label'] ?? ''}',
-          style: const TextStyle(color: accent, fontSize: 12.5, fontWeight: FontWeight.w700)),
-    ]),
-    const SizedBox(height: 12),
+    const SizedBox(height: 4),
+    Text(cached ? 'Rapport enregistré · reproductible' : 'Rapport généré à l\'instant',
+        style: const TextStyle(color: muted, fontSize: 10.5)),
+    const SizedBox(height: 14),
+
+    // ---- executive summary ----
     glassCard(
-      child: Column(children: [
-        Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
-          _scoreCol('Court', scores['short'], _hCol(scores['short'] as num?)),
-          _scoreCol('Moyen', scores['medium'], _hCol(scores['medium'] as num?)),
-          _scoreCol('Long', scores['long'], _hCol(scores['long'] as num?)),
-        ]),
-        const SizedBox(height: 12),
-        _gaugeRow('Confiance', d['confidence'], accent),
-        _gaugeRow('Risque', d['risk_score'], red),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _label('SYNTHÈSE'),
+        const SizedBox(height: 6),
+        Text('${cio['executive_summary'] ?? ''}',
+            style: const TextStyle(fontSize: 13, height: 1.5)),
       ]),
     ),
-    sectionTitle('Scénario attendu'),
+
+    // ---- recommendation by horizon ----
+    sectionTitle('Recommandation par horizon'),
     glassCard(
-        child: Text('${d['expected_scenario'] ?? ''}',
-            style: const TextStyle(fontSize: 13, height: 1.5))),
+      child: Column(
+        children: _horizonLabels.entries.map((e) {
+          final v = (verdicts[e.key] as Map<String, dynamic>?) ?? {};
+          final active = e.key == horizon;
+          return Container(
+            padding: const EdgeInsets.symmetric(vertical: 7),
+            decoration: BoxDecoration(
+              border: Border(
+                  left: BorderSide(color: active ? accent : Colors.transparent, width: 2.5)),
+            ),
+            child: Padding(
+              padding: EdgeInsets.only(left: active ? 8 : 10.5),
+              child: Row(children: [
+                SizedBox(
+                    width: 84,
+                    child: Text(e.value,
+                        style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: active ? FontWeight.w800 : FontWeight.w600,
+                            color: active ? text : muted))),
+                badge('${v['recommendation_label'] ?? '—'}', recColor('${v['recommendation']}')),
+                const Spacer(),
+                Text('${(v['score'] as num?)?.round() ?? 0}',
+                    style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 14,
+                        color: _hCol(v['score'] as num?))),
+                Text('  conf ${(v['confidence'] as num?)?.round() ?? 0}',
+                    style: const TextStyle(color: muted, fontSize: 11)),
+              ]),
+            ),
+          );
+        }).toList(),
+      ),
+    ),
+
+    // ---- bull vs bear ----
+    sectionTitle('Thèse haussière vs baissière'),
     Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Expanded(
-          child: _listCard('Arguments haussiers',
-              bullish.isEmpty ? ['Aucun argument fort détecté.'] : bullish, green)),
+      Expanded(child: _casePanel('HAUSSIER', bull, green)),
       const SizedBox(width: 10),
-      Expanded(
-          child: _listCard('Arguments baissiers',
-              bearish.isEmpty ? ['Aucun signal négatif fort détecté.'] : bearish, red)),
+      Expanded(child: _casePanel('BAISSIER', bear, red)),
     ]),
-    sectionTitle('Synthèses'),
-    glassCard(
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        _sumRow('Technique', d['technical_summary']),
-        const Divider(color: line, height: 18),
-        _sumRow('Actualités', d['news_summary']),
-        const Divider(color: line, height: 18),
-        _sumRow('Historique', d['history_summary']),
-      ]),
-    ),
-    if (pf != null) ...[
-      sectionTitle('Ma position'),
-      glassCard(
-          child: Text('${pf['impact'] ?? ''}', style: const TextStyle(fontSize: 13, height: 1.5))),
-    ],
-    sectionTitle('Action suggérée'),
-    glassCard(
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('${d['suggested_action'] ?? ''}', style: const TextStyle(fontSize: 13, height: 1.5)),
-        if (watchNext.isNotEmpty) ...[
-          const SizedBox(height: 10),
-          const Text('À surveiller ensuite',
-              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5)),
-          const SizedBox(height: 4),
-          ...watchNext.map((w) => _argLine('$w', accent)),
-        ],
-      ]),
-    ),
-    sectionTitle('Gestion du risque'),
-    glassCard(
-        child: Text('${d['risk_note'] ?? ''}',
-            style: const TextStyle(color: amber, fontSize: 12.5, height: 1.5))),
-    if (missing.isNotEmpty) ...[
-      sectionTitle('Données manquantes'),
-      glassCard(
-        child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: missing.map((m) => _argLine('$m', amber)).toList()),
-      ),
-    ],
-    sectionTitle('Explication'),
-    glassCard(
-        child: Text('${d['explanation'] ?? ''}', style: const TextStyle(fontSize: 13, height: 1.55))),
-    if (dataUsed.isNotEmpty)
+
+    // ---- the debate ----
+    if (debate.isNotEmpty) ...[
+      sectionTitle('Débat des analystes'),
+      ...debate.take(4).map((e) => _debateCard(e as Map<String, dynamic>)),
+    ] else if (contradictions.isEmpty)
       Padding(
-        padding: const EdgeInsets.fromLTRB(4, 6, 4, 0),
-        child: Text('Données utilisées : ${dataUsed.join(' · ')}',
+        padding: const EdgeInsets.fromLTRB(4, 10, 4, 0),
+        child: Text('Les analystes sont alignés : aucun désaccord à arbitrer.',
+            style: const TextStyle(color: muted, fontSize: 12)),
+      ),
+    if (cio['calibration_note'] != null && '${cio['calibration_note']}'.isNotEmpty)
+      Padding(
+        padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
+        child: Text('${cio['calibration_note']}',
             style: const TextStyle(color: muted, fontSize: 11, height: 1.4)),
       ),
+
+    // ---- scenarios ----
+    if (scenarios[horizon] != null) ...[
+      sectionTitle('Scénarios — ${_horizonLabels[horizon]!.toLowerCase()}'),
+      _scenarioCard(scenarios[horizon] as Map<String, dynamic>),
+    ],
+
+    // ---- risk radar ----
+    sectionTitle('Radar de risque'),
+    glassCard(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Text('${(risk['overall_risk'] as num?)?.round() ?? 0}/100',
+              style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                  color: (risk['overall_risk'] as num? ?? 0) >= 60 ? red : amber)),
+          const SizedBox(width: 8),
+          Text('risque global · confiance ${(risk['confidence'] as num?)?.round() ?? 0}',
+              style: const TextStyle(color: muted, fontSize: 11.5)),
+        ]),
+        const SizedBox(height: 8),
+        ...dims.entries.map((e) => _gaugeRow(
+            e.key, e.value, (e.value as num? ?? 0) >= 60 ? red : ((e.value as num? ?? 0) >= 40 ? amber : green))),
+        if (drivers.isNotEmpty) const SizedBox(height: 8),
+        ...drivers.take(3).map((s) => _statementLine(s as Map<String, dynamic>, red)),
+      ]),
+    ),
+
+    // ---- analyst breakdown (confidence + what's missing) ----
+    sectionTitle('Les analystes'),
+    ...analysts.entries.map((e) => _analystCard(e.key, e.value as Map<String, dynamic>)),
+
+    // ---- what would invalidate this / what to watch ----
+    if ((focus['invalidation'] as List?)?.isNotEmpty ?? false) ...[
+      sectionTitle('Ce qui invaliderait cette thèse'),
+      glassCard(
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: (focus['invalidation'] as List)
+                  .map((t) => _argLine('$t', amber))
+                  .toList())),
+    ],
+    if ((focus['watch_next'] as List?)?.isNotEmpty ?? false) ...[
+      sectionTitle('À surveiller'),
+      glassCard(
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children:
+                  (focus['watch_next'] as List).map((t) => _argLine('$t', accent)).toList())),
+    ],
+
+    // ---- thesis history (investment memory) ----
+    if (thesisHistory.isNotEmpty) ...[
+      sectionTitle('Historique de la thèse'),
+      ...thesisHistory.take(5).map((c) => _thesisChangeCard(c as Map<String, dynamic>)),
+    ],
+
+    // ---- company knowledge ----
+    if (knowledge.isNotEmpty) ...[
+      sectionTitle('Connaissances société'),
+      ...knowledge.entries.map((e) => _knowledgeCard(e.key, e.value as List)),
+    ],
+
     Padding(
-      padding: const EdgeInsets.fromLTRB(4, 12, 4, 0),
-      child: Text('${d['disclaimer'] ?? ''}',
-          style: const TextStyle(color: muted, fontSize: 11, fontStyle: FontStyle.italic)),
+      padding: const EdgeInsets.fromLTRB(4, 14, 4, 0),
+      child: Text('${d['disclaimer'] ?? ''} · moteur ${d['engine_version'] ?? ''}',
+          style: const TextStyle(color: muted, fontSize: 10.5, fontStyle: FontStyle.italic)),
     ),
   ]);
 }
+
+Widget _label(String s) => Text(s,
+    style: const TextStyle(
+        color: muted, fontSize: 10.5, fontWeight: FontWeight.w800, letterSpacing: 1));
+
+Widget _casePanel(String title, List items, Color color) => Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withValues(alpha: 0.28)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(title,
+            style: TextStyle(
+                color: color, fontSize: 10.5, fontWeight: FontWeight.w800, letterSpacing: 1)),
+        const SizedBox(height: 6),
+        if (items.isEmpty)
+          const Text('—', style: TextStyle(color: muted, fontSize: 12))
+        else
+          ...items.take(4).map((s) => _statementLine(s as Map<String, dynamic>, color)),
+      ]),
+    );
+
+/// Every statement carries its fact / inference / opinion label — the reader must
+/// never have to guess which is which.
+Widget _statementLine(Map<String, dynamic> s, Color color) {
+  final kind = '${s['kind'] ?? 'inference'}';
+  return Padding(
+    padding: const EdgeInsets.only(bottom: 6),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+        decoration: BoxDecoration(
+          color: _kindColor(kind).withValues(alpha: 0.14),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text(kind,
+            style: TextStyle(
+                color: _kindColor(kind), fontSize: 8.5, fontWeight: FontWeight.w800)),
+      ),
+      const SizedBox(height: 2),
+      Text('${s['text'] ?? ''}',
+          style: const TextStyle(fontSize: 12, height: 1.4, color: text)),
+    ]),
+  );
+}
+
+Widget _debateCard(Map<String, dynamic> e) {
+  final unresolved = e['winner'] == 'unresolved';
+  return glassCard(
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        badge(_horizonLabels['${e['horizon']}'] ?? '${e['horizon']}', accent),
+        const SizedBox(width: 8),
+        Expanded(
+            child: Text('${e['topic'] ?? ''}',
+                style: const TextStyle(color: muted, fontSize: 11),
+                overflow: TextOverflow.ellipsis)),
+      ]),
+      const SizedBox(height: 8),
+      _debateSide('${e['bull_analyst']}', '${e['bull_claim']}', green,
+          e['winner'] == e['bull_analyst']),
+      _debateSide('${e['bear_analyst']}', '${e['bear_claim']}', red,
+          e['winner'] == e['bear_analyst']),
+      const SizedBox(height: 6),
+      Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: surface2,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Icon(unresolved ? Icons.balance : Icons.gavel_rounded,
+              size: 13, color: unresolved ? amber : accent),
+          const SizedBox(width: 6),
+          Expanded(
+              child: Text('${e['resolution'] ?? ''}',
+                  style: const TextStyle(fontSize: 11.5, height: 1.4, color: muted))),
+        ]),
+      ),
+    ]),
+  );
+}
+
+Widget _debateSide(String who, String claim, Color color, bool won) => Padding(
+      padding: const EdgeInsets.only(bottom: 5),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Container(width: 3, height: 30, color: color.withValues(alpha: won ? 1 : 0.3)),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Text(who,
+                  style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                      color: won ? color : muted)),
+              if (won) ...[
+                const SizedBox(width: 4),
+                Icon(Icons.check_circle, size: 11, color: color),
+              ],
+            ]),
+            Text(claim, style: const TextStyle(fontSize: 11.5, height: 1.35, color: text)),
+          ]),
+        ),
+      ]),
+    );
+
+Widget _scenarioCard(Map<String, dynamic> s) {
+  Widget row(Map<String, dynamic> sc, Color color) {
+    final p = ((sc['probability'] as num?)?.toDouble() ?? 0) * 100;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          SizedBox(
+              width: 92,
+              child: Text('${sc['name']}',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: color))),
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: TweenAnimationBuilder<double>(
+                tween: Tween(begin: 0, end: p / 100),
+                duration: 550.ms,
+                curve: Curves.easeOutCubic,
+                builder: (c, v, _) => LinearProgressIndicator(
+                    value: v, backgroundColor: surface2, color: color, minHeight: 8),
+              ),
+            ),
+          ),
+          SizedBox(
+              width: 40,
+              child: Text('  ${p.round()}%',
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
+                  textAlign: TextAlign.right)),
+        ]),
+        Padding(
+          padding: const EdgeInsets.only(left: 92, top: 2),
+          child: Text('${sc['rationale'] ?? ''}',
+              style: const TextStyle(color: muted, fontSize: 11, height: 1.35)),
+        ),
+      ]),
+    );
+  }
+
+  final assumptions = (s['assumptions'] as List?) ?? [];
+  return glassCard(
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      row(s['best'] as Map<String, dynamic>, green),
+      row(s['base'] as Map<String, dynamic>, accent),
+      row(s['worst'] as Map<String, dynamic>, red),
+      if (assumptions.isNotEmpty) ...[
+        const SizedBox(height: 8),
+        _label('HYPOTHÈSES'),
+        const SizedBox(height: 4),
+        ...assumptions.take(3).map((a) => Text('• $a',
+            style: const TextStyle(color: muted, fontSize: 11, height: 1.4))),
+      ],
+      const SizedBox(height: 6),
+      Text('Probabilités estimées, jamais des certitudes.',
+          style: const TextStyle(color: muted, fontSize: 10.5, fontStyle: FontStyle.italic)),
+    ]),
+  );
+}
+
+const _analystNames = {
+  'technical': 'Technique',
+  'market_structure': 'Marché & secteur',
+  'news': 'Actualités',
+  'historical_behaviour': 'Comportement historique',
+  'fundamental': 'Fondamentaux',
+  'macro': 'Macroéconomie',
+  'company': 'Société',
+  'portfolio': 'Portefeuille',
+};
+
+Widget _analystCard(String key, Map<String, dynamic> a) {
+  final conf = (a['confidence'] as num?)?.toDouble() ?? 0;
+  final missing = (a['missing_data'] as List?) ?? [];
+  final unavailable = conf == 0;
+  return glassCard(
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Text(_analystNames[key] ?? key,
+            style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
+        const Spacer(),
+        Text('confiance ${conf.round()}',
+            style: TextStyle(
+                color: unavailable ? red : _hCol(conf),
+                fontSize: 11,
+                fontWeight: FontWeight.w700)),
+      ]),
+      const SizedBox(height: 3),
+      Text('${a['headline'] ?? ''}',
+          style: TextStyle(
+              color: unavailable ? red : muted, fontSize: 11.5, height: 1.4)),
+      if (missing.isNotEmpty) ...[
+        const SizedBox(height: 6),
+        _label('INFORMATION MANQUANTE'),
+        const SizedBox(height: 3),
+        ...missing.take(2).map((m) => Text('• $m',
+            style: const TextStyle(color: muted, fontSize: 10.5, height: 1.35))),
+      ],
+    ]),
+  );
+}
+
+Widget _thesisChangeCard(Map<String, dynamic> c) => glassCard(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          badge(_horizonLabels['${c['horizon']}'] ?? '${c['horizon']}', muted),
+          const SizedBox(width: 8),
+          Text('${c['from'] ?? '—'}',
+              style: const TextStyle(color: muted, fontSize: 11.5, fontWeight: FontWeight.w700)),
+          const Icon(Icons.arrow_forward_rounded, size: 13, color: muted),
+          Text('${c['to'] ?? ''}',
+              style: TextStyle(
+                  color: recColor('${c['to']}'),
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w800)),
+          const Spacer(),
+          Text('${'${c['changed_at'] ?? ''}'.split('T').first}',
+              style: const TextStyle(color: muted, fontSize: 10)),
+        ]),
+        const SizedBox(height: 5),
+        Text('${c['reason'] ?? ''}',
+            style: const TextStyle(fontSize: 11.5, height: 1.4, color: text)),
+        ...((c['new_evidence'] as List?) ?? [])
+            .take(2)
+            .map((e) => _argLine('$e', amber)),
+      ]),
+    );
+
+Widget _knowledgeCard(String category, List facts) => glassCard(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _label(category.toUpperCase().replaceAll('_', ' ')),
+        const SizedBox(height: 5),
+        ...facts.take(4).map((f) {
+          final m = f as Map<String, dynamic>;
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 3),
+            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              SizedBox(
+                  width: 108,
+                  child: Text('${m['key']}',
+                      style: const TextStyle(color: muted, fontSize: 11))),
+              Expanded(
+                  child: Text('${m['value']}',
+                      style: const TextStyle(fontSize: 11.5, height: 1.35),
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis)),
+            ]),
+          );
+        }),
+      ]),
+    );
 
 Widget _gaugeRow(String label, dynamic value, Color color) {
   final v = (value as num?)?.toDouble() ?? 0;
   return Padding(
     padding: const EdgeInsets.symmetric(vertical: 4),
     child: Row(children: [
-      SizedBox(width: 78, child: Text(label, style: const TextStyle(fontSize: 12.5, color: muted))),
+      SizedBox(width: 88, child: Text(label, style: const TextStyle(fontSize: 12, color: muted))),
       Expanded(
         child: ClipRRect(
           borderRadius: BorderRadius.circular(6),
@@ -953,15 +1447,6 @@ Widget _gaugeRow(String label, dynamic value, Color color) {
     ]),
   );
 }
-
-Widget _sumRow(String label, dynamic text) =>
-    Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(label,
-          style: const TextStyle(
-              color: muted, fontSize: 11.5, fontWeight: FontWeight.w700, letterSpacing: 0.5)),
-      const SizedBox(height: 3),
-      Text('$text', style: const TextStyle(fontSize: 12.5, height: 1.45)),
-    ]);
 
 // ------------------------------- news ------------------------------------- //
 class NewsPage extends StatefulWidget {
