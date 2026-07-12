@@ -11,7 +11,11 @@ from moroccan_stock_intelligence.config import settings
 from moroccan_stock_intelligence.models import Alert, Stock
 from moroccan_stock_intelligence.repository import create_alert_once, store_signal
 from moroccan_stock_intelligence.services.analytics import MetricSet
-from moroccan_stock_intelligence.services.digest import build_urgent_alert
+from moroccan_stock_intelligence.services.digest import (
+    build_urgent_alert,
+    build_urgent_favorite_alert,
+)
+from moroccan_stock_intelligence.services.favorites import evaluate_favorite
 from moroccan_stock_intelligence.services.portfolio import Portfolio, evaluate_holding
 from moroccan_stock_intelligence.services.scoring import ScoreResult
 from moroccan_stock_intelligence.services.telegram import send_telegram_message
@@ -142,6 +146,68 @@ def dispatch_urgent_holding_alerts(
             sent = send_telegram_message(message, parse_mode="HTML")
         except requests.RequestException as exc:
             LOG.error("urgent_alert_send_failed symbol=%s error=%s", holding.symbol, exc)
+            continue
+        if sent:
+            alert.sent = 1
+            count += 1
+
+    session.commit()
+    return count
+
+
+def dispatch_urgent_favorite_alerts(
+    session: Session,
+    favorite_symbols: list[str],
+    portfolio: Portfolio,
+    metrics: list[MetricSet],
+    scores: dict[str, ScoreResult],
+) -> int:
+    """Send an immediate Telegram alert when a WATCHED (favorited) stock crashes intraday.
+
+    The favorites list and the portfolio are independent, so a symbol can be in both.
+    When it is, we stay silent here: `dispatch_urgent_holding_alerts` has already sent
+    the richer message (with the P/L and the SELL/HOLD advice), and sending a second
+    Telegram for the same crash on the same stock would be pure noise.
+
+    Deduplicated once per symbol per day via the alerts table, like the holding alert.
+    """
+    if not settings.telegram_bot_token or not settings.telegram_chat_id:
+        LOG.warning("telegram_credentials_missing favorite_dispatch_skipped=true")
+        return 0
+
+    held = {holding.symbol for holding in portfolio.holdings}
+    metrics_by_symbol = {metric.symbol: metric for metric in metrics}
+    stocks = {stock.symbol: stock for stock in session.scalars(select(Stock)).all()}
+    now_key = datetime.now(UTC).strftime("%Y-%m-%d")
+    count = 0
+
+    for symbol in favorite_symbols:
+        if symbol in held:
+            continue  # already alerted as a holding — never notify the same crash twice
+        metric = metrics_by_symbol.get(symbol)
+        if metric is None or metric.daily_variation is None:
+            continue
+        if metric.daily_variation > settings.urgent_crash_pct:
+            continue  # not a crash
+        stock = stocks.get(symbol)
+        if stock is None:
+            continue
+
+        evaluation = evaluate_favorite(symbol, metric, scores.get(symbol))
+        message = build_urgent_favorite_alert(evaluation)
+        alert = create_alert_once(
+            session,
+            stock.id,
+            f"{symbol}-urgent-favorite-crash-{now_key}",
+            "urgent_favorite_crash",
+            message,
+        )
+        if alert is None:
+            continue  # already alerted today
+        try:
+            sent = send_telegram_message(message, parse_mode="HTML")
+        except requests.RequestException as exc:
+            LOG.error("urgent_favorite_alert_send_failed symbol=%s error=%s", symbol, exc)
             continue
         if sent:
             alert.sent = 1

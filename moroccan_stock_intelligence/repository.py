@@ -13,6 +13,7 @@ from moroccan_stock_intelligence.models import (
     AnalystPerformance,
     CompanyKnowledge,
     CompanyProfile,
+    Favorite,
     Fundamental,
     MacroIndicator,
     News,
@@ -144,6 +145,71 @@ def load_recent_notifications(session: Session, limit: int = 50) -> list[Notific
             select(Notification).order_by(Notification.created_at.desc()).limit(limit)
         ).all()
     )
+
+
+# --------------------------------------------------------------------------- #
+# Favorites — the owner's explicit watchlist.                                   #
+#                                                                               #
+# Separate from the portfolio by design: a favorite carries no quantity and no  #
+# buy price, so it has no P/L. It only buys the symbol attention (urgent crash  #
+# alert, priority on the capped thesis pushes, its own digest section).         #
+# --------------------------------------------------------------------------- #
+
+def add_favorite(session: Session, symbol: str, note: str | None = None) -> Favorite | None:
+    """Favorite a symbol. Idempotent: re-favoriting updates the note, never duplicates.
+
+    Returns None when the symbol is unknown — we refuse to watch a stock the
+    collector has never seen, rather than storing a dangling row.
+    """
+    stock = session.scalar(select(Stock).where(Stock.symbol == symbol.upper()))
+    if stock is None:
+        return None
+
+    existing = session.scalar(select(Favorite).where(Favorite.stock_id == stock.id))
+    if existing is not None:
+        if note is not None:
+            existing.note = note
+        return existing
+
+    favorite = Favorite(stock_id=stock.id, symbol=stock.symbol, note=note)
+    session.add(favorite)
+    session.flush()
+    return favorite
+
+
+def remove_favorite(session: Session, symbol: str) -> bool:
+    """Un-favorite a symbol. Returns True if a row was actually removed."""
+    favorite = session.scalar(select(Favorite).where(Favorite.symbol == symbol.upper()))
+    if favorite is None:
+        return False
+    session.delete(favorite)
+    return True
+
+
+def load_favorite_symbols(session: Session) -> list[str]:
+    """The watched symbols, oldest favorite first (a stable order for the digest)."""
+    return list(
+        session.scalars(select(Favorite.symbol).order_by(Favorite.created_at, Favorite.id)).all()
+    )
+
+
+def load_favorites(session: Session) -> list[dict]:
+    """Favorites joined with their stock, for the API listing."""
+    rows = session.execute(
+        select(Favorite, Stock)
+        .join(Stock, Stock.id == Favorite.stock_id)
+        .order_by(Favorite.created_at, Favorite.id)
+    ).all()
+    return [
+        {
+            "symbol": favorite.symbol,
+            "company_name": stock.company_name,
+            "sector": stock.sector,
+            "note": favorite.note,
+            "created_at": favorite.created_at.isoformat() if favorite.created_at else None,
+        }
+        for favorite, stock in rows
+    ]
 
 
 def load_symbol_history(

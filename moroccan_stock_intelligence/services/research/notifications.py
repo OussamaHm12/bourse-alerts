@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 from moroccan_stock_intelligence.models import Stock
 from moroccan_stock_intelligence.repository import (
     create_alert_once,
+    load_favorite_symbols,
     load_last_report_before,
     save_notification,
 )
@@ -128,10 +129,33 @@ def evaluate_report(
     return events
 
 
+def _by_attention(
+    session: Session, generated: list[tuple[InvestmentReport, int]]
+) -> list[tuple[InvestmentReport, int]]:
+    """Favorites first, everything else after — order preserved within each group.
+
+    This matters because of MAX_PUSHES_PER_RUN. `generated` arrives in the order the
+    symbols were computed (alphabetical), so without this the 3 available push slots
+    went to whichever symbols happened to sort first — not to the ones the owner
+    actually watches. A thesis change on a favorite must never be crowded out by one
+    on a stock he has never looked at.
+    """
+    try:
+        favorites = set(load_favorite_symbols(session))
+    # Ordering is an optimisation, never a dependency: on failure we notify in the
+    # original order rather than not notifying at all.
+    except Exception:  # noqa: BLE001
+        LOG.exception("favorite_lookup_failed_using_default_order")
+        return generated
+    if not favorites:
+        return generated
+    return sorted(generated, key=lambda item: item[0].symbol not in favorites)
+
+
 def dispatch_thesis_notifications(
     session: Session, generated: list[tuple[InvestmentReport, int]]
 ) -> int:
-    """Push only genuine thesis changes.
+    """Push only genuine thesis changes, favorites first.
 
     `generated` is (report, stored_report_id) for each report produced this run.
     Never raises: notification is best-effort and must not sink a scheduled job.
@@ -141,7 +165,7 @@ def dispatch_thesis_notifications(
     from moroccan_stock_intelligence.services.push import send_push_to_all
 
     sent = 0
-    for report, report_id in generated:
+    for report, report_id in _by_attention(session, generated):
         if sent >= MAX_PUSHES_PER_RUN:
             break
         try:

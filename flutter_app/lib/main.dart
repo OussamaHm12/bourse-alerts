@@ -62,6 +62,53 @@ Future<dynamic> api(String path) async {
   return jsonDecode(txt);
 }
 
+// getString() is GET-only, so favoriting needs its own verb-aware call.
+Future<dynamic> apiSend(String method, String path) async {
+  final uri = Uri.base.resolve(path).toString();
+  final req = await html.HttpRequest.request(uri, method: method);
+  final body = req.responseText;
+  return (body == null || body.isEmpty) ? <String, dynamic>{} : jsonDecode(body);
+}
+
+/// The starred symbols, shared by every page.
+///
+/// The pages live inside an IndexedStack, so they are built once and kept alive —
+/// `initState` does NOT re-run when you switch tabs. Without a shared notifier,
+/// starring a stock in Marché would leave the Favoris tab showing a stale list until
+/// a manual pull-to-refresh. Everything that renders a star reads this instead of its
+/// own copy, so the three surfaces (Marché, Favoris, fiche détail) can never disagree.
+final favoriteSymbols = ValueNotifier<Set<String>>(<String>{});
+
+Future<void> refreshFavorites() async {
+  try {
+    final d = await api('api/favorites');
+    favoriteSymbols.value = ((d['symbols'] as List?) ?? []).map((s) => '$s').toSet();
+  } catch (_) {
+    // Non-fatal: the stars stay as they were rather than blanking out.
+  }
+}
+
+/// Star / un-star a symbol. Returns the server's view of the new state, so the UI
+/// never drifts from the source of truth that actually drives the alerts.
+Future<bool> toggleFavorite(String symbol, bool isFavorite) async {
+  final r = await apiSend(isFavorite ? 'DELETE' : 'POST', 'api/favorites/$symbol');
+  final now = (r['is_favorite'] as bool?) ?? !isFavorite;
+  final next = Set<String>.from(favoriteSymbols.value);
+  now ? next.add(symbol) : next.remove(symbol);
+  favoriteSymbols.value = next; // notifies every listening page at once
+  return now;
+}
+
+Widget favoriteStar({required bool active, required VoidCallback onTap, double size = 20}) =>
+    IconButton(
+      onPressed: onTap,
+      visualDensity: VisualDensity.compact,
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+      tooltip: active ? 'Retirer des favoris' : 'Suivre cette action',
+      icon: Icon(active ? Icons.star : Icons.star_border, color: active ? amber : muted, size: size),
+    );
+
 String fmt(num? v, [int d = 2]) {
   if (v == null) return 'n/a';
   return v.toStringAsFixed(d).replaceAllMapped(RegExp(r'\B(?=(\d{3})+(?!\d))'), (m) => ' ');
@@ -130,7 +177,21 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _idx = 0;
-  final _pages = const [PortfolioPage(), MarketPage(), OppsPage(), AnalysisPage(), NewsPage(), NotificationsPage()];
+  final _pages = const [
+    PortfolioPage(),
+    FavoritesPage(),
+    MarketPage(),
+    OppsPage(),
+    AnalysisPage(),
+    NewsPage(),
+    NotificationsPage(),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    refreshFavorites(); // seed the stars once, before any page renders one
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -170,6 +231,7 @@ class _HomeShellState extends State<HomeShell> {
           onDestinationSelected: (i) => setState(() => _idx = i),
           destinations: const [
             NavigationDestination(icon: Icon(Icons.account_balance_wallet_outlined), selectedIcon: Icon(Icons.account_balance_wallet), label: 'Portefeuille'),
+            NavigationDestination(icon: Icon(Icons.star_border), selectedIcon: Icon(Icons.star), label: 'Favoris'),
             NavigationDestination(icon: Icon(Icons.show_chart_outlined), selectedIcon: Icon(Icons.show_chart), label: 'Marché'),
             NavigationDestination(icon: Icon(Icons.bolt_outlined), selectedIcon: Icon(Icons.bolt), label: 'Opportunités'),
             NavigationDestination(icon: Icon(Icons.psychology_outlined), selectedIcon: Icon(Icons.psychology), label: 'Analyse'),
@@ -345,6 +407,163 @@ Widget _holdingCard(BuildContext context, Map<String, dynamic> h) {
   );
 }
 
+// ------------------------------ favorites --------------------------------- //
+// The watchlist. Deliberately NOT the portfolio: no quantity, no buy price, so no
+// P/L and no SELL/HOLD advice. What a favorite buys is attention — the crash alert,
+// priority on the thesis pushes, and its own digest section.
+class FavoritesPage extends StatefulWidget {
+  const FavoritesPage({super.key});
+  @override
+  State<FavoritesPage> createState() => _FavoritesPageState();
+}
+
+class _FavoritesPageState extends State<FavoritesPage> {
+  List _favorites = [];
+  bool _loading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    // The page is kept alive by the IndexedStack, so initState never runs again.
+    // Listening is what makes a stock starred from the Marché tab show up here.
+    favoriteSymbols.addListener(_load);
+    _load();
+  }
+
+  @override
+  void dispose() {
+    favoriteSymbols.removeListener(_load);
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    if (!mounted) return;
+    setState(() => _loading = true);
+    try {
+      final d = await api('api/favorites');
+      if (!mounted) return;
+      setState(() {
+        _favorites = (d['favorites'] as List?) ?? [];
+        _error = null;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+        _loading = false;
+      });
+    }
+  }
+
+  // toggleFavorite updates the shared notifier, which triggers _load via the listener.
+  Future<void> _unfavorite(String symbol) => toggleFavorite(symbol, true);
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) return const Center(child: CircularProgressIndicator(color: accent));
+    return RefreshIndicator(
+      onRefresh: _load,
+      color: accent,
+      backgroundColor: surface2,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(14, 6, 14, 24),
+        children: [
+          sectionTitle('Mes favoris'),
+          if (_error != null)
+            glassCard(child: Text('Erreur : $_error', style: const TextStyle(color: red)))
+          else if (_favorites.isEmpty)
+            glassCard(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: const [
+                Row(children: [
+                  Icon(Icons.star_border, color: muted, size: 18),
+                  SizedBox(width: 8),
+                  Text('Aucun favori', style: TextStyle(fontWeight: FontWeight.w700)),
+                ]),
+                SizedBox(height: 8),
+                Text(
+                  'Touchez l\'étoile sur une action, dans l\'onglet Marché, pour la suivre. '
+                  'Un favori est surveillé comme votre portefeuille : alerte immédiate en cas '
+                  'de chute, priorité sur les notifications, et une section dédiée dans le '
+                  'résumé quotidien.',
+                  style: TextStyle(color: muted, fontSize: 12.5, height: 1.45),
+                ),
+              ]),
+            )
+          else
+            ..._favorites.asMap().entries.map(
+                  (e) => _favoriteCard(context, e.value as Map<String, dynamic>, _unfavorite)
+                      .enter(e.key),
+                ),
+        ],
+      ),
+    );
+  }
+}
+
+Widget _favoriteCard(
+  BuildContext context,
+  Map<String, dynamic> f,
+  Future<void> Function(String) onRemove,
+) {
+  final variation = f['daily_variation'] as num?;
+  final score = f['buy_score'] as num?;
+  final risks = (f['risks'] as List?) ?? [];
+  return glassCard(
+    onTap: () => showStockDetail(context, f['symbol'] as String),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Text(f['symbol'] ?? '', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+              const SizedBox(width: 8),
+              badge(f['label'] ?? 'NEUTRE'),
+            ]),
+            const SizedBox(height: 2),
+            Text(f['company_name'] ?? '',
+                style: const TextStyle(color: muted, fontSize: 12), overflow: TextOverflow.ellipsis),
+          ]),
+        ),
+        // Always starred: this list only ever contains favorites.
+        favoriteStar(active: true, onTap: () => onRemove(f['symbol'] as String)),
+      ]),
+      const SizedBox(height: 10),
+      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+        Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+          Text('${fmt(f['price'])}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+          const SizedBox(width: 4),
+          const Padding(
+            padding: EdgeInsets.only(bottom: 2),
+            child: Text('MAD', style: TextStyle(color: muted, fontSize: 11)),
+          ),
+          const SizedBox(width: 8),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 2),
+            child: Text('${signed(variation)}%',
+                style: TextStyle(color: plc(variation), fontSize: 13, fontWeight: FontWeight.w700)),
+          ),
+        ]),
+        Text(score == null ? 'n/a' : '${score.round()}/100',
+            style: const TextStyle(color: muted, fontSize: 12, fontWeight: FontWeight.w700)),
+      ]),
+      const SizedBox(height: 8),
+      Text(f['headline'] ?? '', style: const TextStyle(fontSize: 12.5, height: 1.4)),
+      if (risks.isNotEmpty) ...[
+        const SizedBox(height: 6),
+        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Icon(Icons.warning_amber_rounded, color: amber, size: 14),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text('${risks.first}', style: const TextStyle(color: amber, fontSize: 11.5, height: 1.35)),
+          ),
+        ]),
+      ],
+    ]),
+  );
+}
+
 // ------------------------------- market ----------------------------------- //
 class MarketPage extends StatefulWidget {
   const MarketPage({super.key});
@@ -376,6 +595,20 @@ class _MarketPageState extends State<MarketPage> {
       });
     } catch (_) {
       setState(() => _loading = false);
+    }
+  }
+
+  /// Star state is rendered from the shared `favoriteSymbols` notifier, so we only
+  /// need to call the server here — the row (and the Favoris tab) redraw themselves.
+  Future<void> _toggleFavorite(String symbol) async {
+    try {
+      await toggleFavorite(symbol, favoriteSymbols.value.contains(symbol));
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Favori non enregistré : réessayez.')),
+        );
+      }
     }
   }
 
@@ -434,22 +667,39 @@ class _MarketPageState extends State<MarketPage> {
       Expanded(
         child: _loading
             ? const Center(child: CircularProgressIndicator(color: accent))
-            : ListView.builder(
-                padding: const EdgeInsets.fromLTRB(14, 6, 14, 24),
-                itemCount: _stocks.length,
-                itemBuilder: (c, i) => _stockRow(context, _stocks[i] as Map<String, dynamic>).enter(i),
+            : ValueListenableBuilder<Set<String>>(
+                valueListenable: favoriteSymbols,
+                builder: (c, starred, _) => ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(14, 6, 14, 24),
+                  itemCount: _stocks.length,
+                  itemBuilder: (c, i) {
+                    final s = _stocks[i] as Map<String, dynamic>;
+                    final symbol = s['symbol'] as String;
+                    return _stockRow(
+                      context,
+                      s,
+                      isFavorite: starred.contains(symbol),
+                      onToggleFavorite: () => _toggleFavorite(symbol),
+                    ).enter(i);
+                  },
+                ),
               ),
       ),
     ]);
   }
 }
 
-Widget _stockRow(BuildContext context, Map<String, dynamic> s) {
+Widget _stockRow(
+  BuildContext context,
+  Map<String, dynamic> s, {
+  required bool isFavorite,
+  required VoidCallback onToggleFavorite,
+}) {
   final trend = s['trend'];
   final tcol = trend == 'haussier' ? green : (trend == 'baissier' ? red : muted);
   final icon = trend == 'haussier' ? Icons.trending_up : (trend == 'baissier' ? Icons.trending_down : Icons.trending_flat);
   return glassCard(
-    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+    padding: const EdgeInsets.fromLTRB(14, 12, 6, 12),
     onTap: () => showStockDetail(context, s['symbol'] as String),
     child: Row(children: [
       Container(
@@ -475,6 +725,7 @@ Widget _stockRow(BuildContext context, Map<String, dynamic> s) {
         const SizedBox(height: 2),
         Text('${s['buy_score'] == null ? 'n/a' : (s['buy_score'] as num).round()}', style: const TextStyle(color: muted, fontSize: 11, fontWeight: FontWeight.w700)),
       ]),
+      favoriteStar(active: isFavorite, onTap: onToggleFavorite, size: 19),
     ]),
   );
 }
@@ -1631,6 +1882,26 @@ void showStockDetail(BuildContext context, String symbol) {
   );
 }
 
+/// The star inside the detail sheet. Reads the shared notifier like every other star,
+/// so toggling here also updates the Marché row behind the sheet and the Favoris tab.
+class _DetailStar extends StatelessWidget {
+  const _DetailStar({required this.symbol});
+  final String symbol;
+
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder<Set<String>>(
+        valueListenable: favoriteSymbols,
+        builder: (c, starred, _) {
+          final active = starred.contains(symbol);
+          return favoriteStar(
+            active: active,
+            onTap: () => toggleFavorite(symbol, active),
+            size: 24,
+          );
+        },
+      );
+}
+
 Widget _detailBody(Map<String, dynamic> d, ScrollController ctrl) {
   final s = d['score'] as Map<String, dynamic>?;
   final mom = d['momentum'] as Map<String, dynamic>? ?? {};
@@ -1645,6 +1916,7 @@ Widget _detailBody(Map<String, dynamic> d, ScrollController ctrl) {
           Text('${d['company_name'] ?? ''}', style: const TextStyle(color: muted, fontSize: 13)),
         ]),
       ),
+      _DetailStar(symbol: '${d['symbol']}'),
       if (s != null) badge(s['label'] ?? 'NEUTRE'),
     ]),
     const SizedBox(height: 12),
