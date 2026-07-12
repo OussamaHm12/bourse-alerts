@@ -404,3 +404,30 @@ class MacroIndicator(Base):
     collected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class Favorite(Base):
+    """A stock the owner explicitly chose to watch.
+
+    Deliberately NOT the portfolio: a favorite has no quantity and no buy price, so
+    it has no P/L and never produces a SELL/HOLD advice. What it buys you is
+    attention — the urgent intraday crash alert, priority on the capped thesis
+    pushes, its own digest section, and its own tab in the app.
+
+    The two lists are independent on purpose: holding a stock does not make it a
+    favorite, and vice-versa. A stock that happens to be both is alerted once, as a
+    holding (the richer message), never twice.
+
+    `stock_id` is unique, so favoriting twice is idempotent rather than an error.
+    """
+
+    __tablename__ = "favorites"
+    __table_args__ = (UniqueConstraint("stock_id", name="uq_favorite_stock"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )

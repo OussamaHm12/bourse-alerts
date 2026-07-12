@@ -324,17 +324,37 @@ Optional PostgreSQL profile:
 docker compose --profile postgres up postgres
 ```
 
-## Portfolio Watchlist
+## Favorites (the watchlist)
 
-Edit [config/watchlist.json](config/watchlist.json) for symbols you only want to track:
+Star any stock from the **Marché** tab (or from its detail sheet) and it becomes a
+favorite, stored in the `favorites` table. Favorites are managed entirely from the app —
+no file to edit, no redeploy.
 
-```json
-{
-  "symbols": ["TGC", "AKT", "ATW", "CIH", "MSA", "HPS", "MNG"]
-}
-```
+A favorite is deliberately **not** a holding: it carries no quantity and no buy price,
+so it has no P/L and never produces a SELL/HOLD advice. What it buys is *attention*:
 
-The dashboard watchlist page tracks performance, opportunity scores, and alert context for these symbols.
+- **Urgent crash alert.** A favorite falling `URGENT_CRASH_PCT` (-5% by default) intraday
+  triggers an immediate Telegram alert, exactly like a held position — minus the P/L block.
+- **Priority on thesis notifications.** Thesis-change pushes are capped at 3 per run
+  (`MAX_PUSHES_PER_RUN`). Favorites are evaluated first, so a change on a stock you watch
+  is never crowded out by one on a stock you have never looked at.
+- **Its own digest section.** The 09:00/17:00 digests carry a `⭐ Mes favoris` block, and
+  the intraday points carry a one-line recap plus a detail line for anything moving ≥5%.
+- **Its own tab** in the app, sorted most-attention-worthy first (crashes, then big moves,
+  then by score).
+
+The two lists are independent: holding a stock does not favorite it, and vice-versa. A
+stock that is **both** held and favorited is alerted **once** — as a holding, which is the
+richer message.
+
+| Endpoint | Method | Effect |
+| --- | --- | --- |
+| `/api/favorites` | GET | Every favorite, evaluated and sorted |
+| `/api/favorites/{symbol}` | POST | Star (idempotent) |
+| `/api/favorites/{symbol}` | DELETE | Un-star (no-op if absent) |
+
+> [config/watchlist.json](config/watchlist.json) is legacy: it now only filters the
+> Streamlit dashboard's watchlist page and drives none of the alerts or digests.
 
 ## Portfolio Holdings (stocks you actually own)
 

@@ -78,6 +78,23 @@ def score_opportunity(metric: MetricSet, news_sentiment_score: float = 0.0) -> S
     )
 
 
+def classify_label(score: ScoreResult | None) -> str:
+    """Turn the three scores into a single actionable label (French).
+
+    Lives here rather than in `views` because the API, the digest and the favorites
+    service all need the same label, and none of them should import a view layer.
+    """
+    if score is None:
+        return "NEUTRE"
+    if score.avoid_score >= 60:
+        return "ÉVITER"
+    if score.buy_score >= 65:
+        return "ACHETER"
+    if score.buy_score >= 50 or score.watch_score >= 55:
+        return "SURVEILLER"
+    return "NEUTRE"
+
+
 def _momentum_score(metric: MetricSet) -> float:
     values = [
         (metric.momentum_1d, 0.15),

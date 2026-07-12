@@ -10,18 +10,22 @@ from sqlalchemy import func, select
 
 from moroccan_stock_intelligence.config import settings
 from moroccan_stock_intelligence.models import Price
-from moroccan_stock_intelligence.services.alerts import dispatch_urgent_holding_alerts
+from moroccan_stock_intelligence.services.alerts import (
+    dispatch_urgent_favorite_alerts,
+    dispatch_urgent_holding_alerts,
+)
 from moroccan_stock_intelligence.services.collector import (
     collect_market_snapshots,
     persist_snapshots,
 )
-from moroccan_stock_intelligence.repository import save_notification
+from moroccan_stock_intelligence.repository import load_favorite_symbols, save_notification
 from moroccan_stock_intelligence.services.digest import (
     build_digest,
     build_intraday_update,
     build_push_payload,
     html_to_text,
 )
+from moroccan_stock_intelligence.services.favorites import evaluate_favorites
 from moroccan_stock_intelligence.services.portfolio import evaluate_portfolio, load_portfolio
 from moroccan_stock_intelligence.services.push import send_push_to_all
 from moroccan_stock_intelligence.services.telegram import send_telegram_message
@@ -41,11 +45,14 @@ def _digest_job(session_factory, period_label: str) -> None:  # noqa: ANN001
             portfolio = load_portfolio()
             metrics_by_symbol = {metric.symbol: metric for metric in metrics}
             holdings = evaluate_portfolio(portfolio, metrics_by_symbol, scores)
+            favorites = evaluate_favorites(
+                load_favorite_symbols(session), metrics_by_symbol, scores
+            )
 
-            message = build_digest(period_label, metrics, scores, holdings, portfolio)
+            message = build_digest(period_label, metrics, scores, holdings, portfolio, favorites)
             save_notification(session, "digest", period_label, html_to_text(message))
             send_telegram_message(message, parse_mode="HTML")
-            title, body = build_push_payload(period_label, holdings)
+            title, body = build_push_payload(period_label, holdings, favorites)
             send_push_to_all(session, title, body, "/")
             # NOTE: the old event-based analysis alerts used to fire here. They are
             # gone: intelligent per-symbol notification is now thesis-based and owned
@@ -69,14 +76,23 @@ def _intraday_job(session_factory, period_label: str) -> None:  # noqa: ANN001
             portfolio = load_portfolio()
             metrics_by_symbol = {metric.symbol: metric for metric in metrics}
             holdings = evaluate_portfolio(portfolio, metrics_by_symbol, scores)
+            favorite_symbols = load_favorite_symbols(session)
+            favorites = evaluate_favorites(favorite_symbols, metrics_by_symbol, scores)
 
             # Safety net: immediate alert if a held position is crashing intraday.
             dispatch_urgent_holding_alerts(session, portfolio, metrics, scores)
+            # Same safety net for a watched (favorited) stock. A symbol that is both
+            # held and favorited is skipped here — it was just alerted above, with P/L.
+            dispatch_urgent_favorite_alerts(
+                session, favorite_symbols, portfolio, metrics, scores
+            )
 
-            message = build_intraday_update(period_label, metrics, scores, holdings, portfolio)
+            message = build_intraday_update(
+                period_label, metrics, scores, holdings, portfolio, favorites
+            )
             save_notification(session, "intraday", period_label, html_to_text(message))
             send_telegram_message(message, parse_mode="HTML")
-            title, body = build_push_payload(period_label, holdings)
+            title, body = build_push_payload(period_label, holdings, favorites)
             send_push_to_all(session, title, body, "/")
             # Intelligent alerts are thesis-based now and belong to _research_job only
             # (see _digest_job). The intraday job keeps the urgent-crash safety net above.

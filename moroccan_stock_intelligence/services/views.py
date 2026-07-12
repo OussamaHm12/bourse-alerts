@@ -7,19 +7,25 @@ from sqlalchemy.orm import Session
 from moroccan_stock_intelligence.config import settings
 from moroccan_stock_intelligence.models import News
 from moroccan_stock_intelligence.repository import (
+    load_favorite_symbols,
     load_price_frame,
     load_recent_news,
     load_recent_notifications,
     load_symbol_history,
 )
 from moroccan_stock_intelligence.services.analytics import MetricSet, compute_metrics
+from moroccan_stock_intelligence.services.favorites import evaluate_favorites, sort_for_attention
 from moroccan_stock_intelligence.services.portfolio import (
     HoldingEvaluation,
     Portfolio,
     evaluate_portfolio,
     load_portfolio,
 )
-from moroccan_stock_intelligence.services.scoring import ScoreResult, score_opportunity
+from moroccan_stock_intelligence.services.scoring import (
+    ScoreResult,
+    classify_label,
+    score_opportunity,
+)
 
 
 def compute_state(session: Session) -> tuple[list[MetricSet], dict[str, ScoreResult]]:
@@ -91,6 +97,41 @@ def market_payload(metrics: list[MetricSet], scores: dict[str, ScoreResult]) -> 
     }
 
 
+def favorites_payload(session: Session) -> dict:
+    """The watchlist tab: every favorite, most attention-worthy first.
+
+    No P/L and no SELL/HOLD advice — we hold none of these. `watched` is what the
+    app stars, so the star state comes from the same source of truth as the alerts.
+    """
+    metrics, scores = compute_state(session)
+    metrics_by_symbol = {metric.symbol: metric for metric in metrics}
+    symbols = load_favorite_symbols(session)
+    evaluations = sort_for_attention(evaluate_favorites(symbols, metrics_by_symbol, scores))
+    return {
+        "as_of": datetime.now(UTC).isoformat(),
+        "count": len(evaluations),
+        "symbols": symbols,
+        "favorites": [
+            {
+                "symbol": e.symbol,
+                "company_name": e.company_name,
+                "sector": e.sector,
+                "price": e.price,
+                "daily_variation": e.daily_variation,
+                "momentum_30d": e.momentum_30d,
+                "volume_anomaly": e.volume_anomaly,
+                "buy_score": e.buy_score,
+                "avoid_score": e.avoid_score,
+                "label": e.label,
+                "headline": e.headline,
+                "reasons": e.reasons[:3],
+                "risks": e.risks[:2],
+            }
+            for e in evaluations
+        ],
+    }
+
+
 def overview_payload(session: Session) -> dict:
     metrics, scores = compute_state(session)
     portfolio = load_portfolio()
@@ -106,19 +147,6 @@ def overview_payload(session: Session) -> dict:
 # Enriched views: full market table, per-stock detail, opportunities, news.    #
 # --------------------------------------------------------------------------- #
 
-def classify_label(score: ScoreResult | None) -> str:
-    """Turn the three scores into a single actionable label (French)."""
-    if score is None:
-        return "NEUTRE"
-    if score.avoid_score >= 60:
-        return "ÉVITER"
-    if score.buy_score >= 65:
-        return "ACHETER"
-    if score.buy_score >= 50 or score.watch_score >= 55:
-        return "SURVEILLER"
-    return "NEUTRE"
-
-
 def _trend(metric: MetricSet) -> str:
     if metric.price is None or metric.ma50 is None:
         return "neutre"
@@ -129,7 +157,7 @@ def _trend(metric: MetricSet) -> str:
     return "neutre"
 
 
-def _stock_row(metric: MetricSet, score: ScoreResult | None) -> dict:
+def _stock_row(metric: MetricSet, score: ScoreResult | None, is_favorite: bool = False) -> dict:
     return {
         "symbol": metric.symbol,
         "company_name": metric.company_name,
@@ -144,6 +172,7 @@ def _stock_row(metric: MetricSet, score: ScoreResult | None) -> dict:
         "avoid_score": score.avoid_score if score else None,
         "label": classify_label(score),
         "trend": _trend(metric),
+        "is_favorite": is_favorite,
     }
 
 
@@ -162,7 +191,8 @@ def stocks_payload(
     query: str | None = None,
 ) -> dict:
     metrics, scores = compute_state(session)
-    rows = [_stock_row(m, scores.get(m.symbol)) for m in metrics]
+    favorites = set(load_favorite_symbols(session))
+    rows = [_stock_row(m, scores.get(m.symbol), m.symbol in favorites) for m in metrics]
     if sector:
         rows = [r for r in rows if (r["sector"] or "").lower() == sector.lower()]
     if query:
@@ -203,6 +233,7 @@ def stock_detail_payload(session: Session, symbol: str) -> dict | None:
         "symbol": metric.symbol,
         "company_name": metric.company_name,
         "sector": metric.sector,
+        "is_favorite": metric.symbol in set(load_favorite_symbols(session)),
         "price": metric.price,
         "daily_variation": metric.daily_variation,
         "volume": metric.volume,

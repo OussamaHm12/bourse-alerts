@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from moroccan_stock_intelligence.config import settings
 from moroccan_stock_intelligence.services.analytics import MetricSet
+from moroccan_stock_intelligence.services.favorites import FavoriteEvaluation, sort_for_attention
 from moroccan_stock_intelligence.services.portfolio import HoldingEvaluation, Portfolio
 from moroccan_stock_intelligence.services.scoring import ScoreResult
 
@@ -51,6 +52,7 @@ def build_digest(
     scores: dict[str, ScoreResult],
     holdings: list[HoldingEvaluation],
     portfolio: Portfolio,
+    favorites: list[FavoriteEvaluation] | None = None,
 ) -> str:
     now = _now_local()
     lines: list[str] = [
@@ -59,6 +61,9 @@ def build_digest(
         "",
     ]
     lines.extend(_portfolio_section(holdings, portfolio))
+    if favorites:
+        lines.append("")
+        lines.extend(_favorites_section(favorites))
     lines.append("")
     lines.extend(_market_section(metrics, scores))
     lines.append("")
@@ -75,8 +80,9 @@ def build_intraday_update(
     scores: dict[str, ScoreResult],
     holdings: list[HoldingEvaluation],
     portfolio: Portfolio,
+    favorites: list[FavoriteEvaluation] | None = None,
 ) -> str:
-    """Lightweight intraday point: portfolio P/L, opportunities >= recap score, movers."""
+    """Lightweight intraday point: portfolio P/L, favorites, opportunities, movers."""
     now = _now_local()
     lines: list[str] = [
         f"<b>📊 Bourse de Casablanca — {_esc(period_label)} ({now:%H:%M})</b>",
@@ -84,21 +90,8 @@ def build_intraday_update(
         "",
     ]
 
-    priced = [h for h in holdings if h.net_pl is not None]
-    if priced:
-        total_cost = sum(h.cost_basis for h in priced)
-        total_net = sum(h.net_pl for h in priced)
-        total_pct = (total_net / total_cost * 100) if total_cost else None
-        pl_icon = "🟢" if total_net >= 0 else "🔴"
-        lines.append(
-            f"{pl_icon} Portefeuille : P/L net <b>{_signed(total_net)} MAD "
-            f"({_signed(total_pct, 1)}%)</b>"
-        )
-        to_sell = [h for h in holdings if h.advice == "SELL"]
-        if to_sell:
-            lines.append("🔴 À VENDRE : " + ", ".join(_esc(h.symbol) for h in to_sell))
-    else:
-        lines.append("💼 Aucune position enregistrée.")
+    lines.extend(_portfolio_intraday_lines(holdings))
+    lines.extend(_favorites_intraday_lines(favorites or []))
 
     threshold = settings.opportunity_recap_score
     ranked = sorted(scores.values(), key=lambda s: s.buy_score, reverse=True)
@@ -122,6 +115,62 @@ def build_intraday_update(
     lines.append("")
     lines.append("<i>Point intraday — cours différés ~15 min. Information seulement.</i>")
     return "\n".join(lines)
+
+
+def _portfolio_intraday_lines(holdings: list[HoldingEvaluation]) -> list[str]:
+    """One-line portfolio P/L for the intraday point (the full block is digest-only)."""
+    priced = [h for h in holdings if h.net_pl is not None]
+    if not priced:
+        return ["💼 Aucune position enregistrée."]
+
+    total_cost = sum(h.cost_basis for h in priced)
+    total_net = sum(h.net_pl for h in priced)
+    total_pct = (total_net / total_cost * 100) if total_cost else None
+    icon = "🟢" if total_net >= 0 else "🔴"
+    lines = [
+        f"{icon} Portefeuille : P/L net <b>{_signed(total_net)} MAD "
+        f"({_signed(total_pct, 1)}%)</b>"
+    ]
+    to_sell = [h for h in holdings if h.advice == "SELL"]
+    if to_sell:
+        lines.append("🔴 À VENDRE : " + ", ".join(_esc(h.symbol) for h in to_sell))
+    return lines
+
+
+def _favorites_intraday_lines(favorites: list[FavoriteEvaluation]) -> list[str]:
+    """One recap line for the favorites, plus a detail line only for the ones moving hard."""
+    if not favorites:
+        return []
+
+    watched = sort_for_attention(favorites)
+    lines = [
+        "⭐ Favoris : "
+        + ", ".join(f"{_esc(f.symbol)} {_signed(f.daily_variation, 1)}%" for f in watched[:5])
+    ]
+    # Only the ones actually worth interrupting for get their own line.
+    lines.extend(
+        f"   ⚠️ {_esc(f.symbol)} — {_esc(f.headline)}"
+        for f in watched
+        if f.daily_variation is not None and abs(f.daily_variation) >= 5
+    )
+    return lines
+
+
+def _favorites_section(favorites: list[FavoriteEvaluation]) -> list[str]:
+    """The watchlist block: no P/L (we own nothing), just what moved and what it means."""
+    lines = ["<b>⭐ Mes favoris</b>"]
+    for favorite in sort_for_attention(favorites):
+        variation = favorite.daily_variation
+        # A stock with no collected price is neither up nor down — a green dot here
+        # would read as "it rose", which is a claim the data does not support.
+        icon = "⚪" if variation is None else ("🔴" if variation < 0 else "🟢")
+        score = "n/a" if favorite.buy_score is None else f"{favorite.buy_score:.0f}/100"
+        lines.append(
+            f"{icon} <b>{_esc(favorite.symbol)}</b> — {_num(favorite.price)} MAD "
+            f"({_signed(favorite.daily_variation, 2)}%) · {_esc(favorite.label)} {score}"
+        )
+        lines.append(f"   {_esc(favorite.headline)}")
+    return lines
 
 
 def _portfolio_section(holdings: list[HoldingEvaluation], portfolio: Portfolio) -> list[str]:
@@ -229,26 +278,68 @@ def _opportunities_section(scores: dict[str, ScoreResult]) -> list[str]:
 
 
 def build_push_payload(
-    period_label: str, holdings: list[HoldingEvaluation]
+    period_label: str,
+    holdings: list[HoldingEvaluation],
+    favorites: list[FavoriteEvaluation] | None = None,
 ) -> tuple[str, str]:
     """Short (title, body) for a Web Push notification."""
     title = f"Bourse Casablanca — {period_label}"
-    if not holdings:
+    parts: list[str] = []
+
+    if holdings:
+        priced = [h for h in holdings if h.net_pl is not None]
+        total_net = sum(h.net_pl for h in priced)
+        to_sell = [h for h in holdings if h.advice == "SELL"]
+        body = f"Portefeuille : P/L net {_signed(total_net, 0)} MAD"
+        if to_sell:
+            body += f" · {len(to_sell)} à VENDRE (" + ", ".join(h.symbol for h in to_sell[:3]) + ")"
+        else:
+            body += " · tout à CONSERVER"
+        parts.append(body)
+
+    # Only favorites that actually moved earn space in a push body.
+    moving = [
+        f
+        for f in (favorites or [])
+        if f.daily_variation is not None and abs(f.daily_variation) >= 3
+    ]
+    if moving:
+        parts.append(
+            "⭐ " + ", ".join(f"{f.symbol} {_signed(f.daily_variation, 1)}%" for f in moving[:3])
+        )
+
+    if not parts:
         return title, "Résumé du marché disponible dans l'app"
-    priced = [h for h in holdings if h.net_pl is not None]
-    total_net = sum(h.net_pl for h in priced)
-    to_sell = [h for h in holdings if h.advice == "SELL"]
-    body = f"Portefeuille : P/L net {_signed(total_net, 0)} MAD"
-    if to_sell:
-        body += f" · {len(to_sell)} à VENDRE (" + ", ".join(h.symbol for h in to_sell[:3]) + ")"
-    else:
-        body += " · tout à CONSERVER"
-    return title, body
+    return title, " · ".join(parts)
 
 
 def html_to_text(message: str) -> str:
     """Strip the Telegram HTML formatting so the same content is readable in-app."""
     return html.unescape(re.sub(r"<[^>]+>", "", message)).strip()
+
+
+def build_urgent_favorite_alert(favorite: FavoriteEvaluation) -> str:
+    """Crash alert for a WATCHED stock. No P/L line: we hold none of it.
+
+    Deliberately framed as an opportunity/risk to assess, not as a position to
+    defend — the owner has nothing at stake here yet.
+    """
+    lines = [
+        f"<b>⭐ ALERTE FAVORI — {_esc(favorite.symbol)}</b>",
+        _esc(favorite.company_name),
+        "",
+        f"Chute de <b>{_signed(favorite.daily_variation, 2)}%</b> en séance",
+        f"Cours : {_num(favorite.price)} MAD",
+        "Titre suivi (aucune position détenue).",
+        "",
+        f"Score {('n/a' if favorite.buy_score is None else f'{favorite.buy_score:.0f}/100')} "
+        f"— {_esc(favorite.label)}",
+    ]
+    if favorite.risks:
+        lines.append(f"⚠️ {_esc(favorite.risks[0])}")
+    lines.append("")
+    lines.append("<i>Information seulement, ceci n'est pas un conseil en investissement.</i>")
+    return "\n".join(lines)
 
 
 def build_urgent_alert(holding: HoldingEvaluation) -> str:

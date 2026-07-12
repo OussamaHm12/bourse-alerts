@@ -12,7 +12,13 @@ from moroccan_stock_intelligence.config import settings
 from moroccan_stock_intelligence.db import get_engine, get_session_factory, init_db
 from moroccan_stock_intelligence.logging_config import configure_logging
 from moroccan_stock_intelligence.scheduler import build_scheduler, run_update_now
-from moroccan_stock_intelligence.repository import load_report_history, save_notification
+from moroccan_stock_intelligence.repository import (
+    add_favorite,
+    load_favorites,
+    load_report_history,
+    remove_favorite,
+    save_notification,
+)
 from moroccan_stock_intelligence.services.investment_analysis import (
     analysis_market_summary,
     analysis_opportunities,
@@ -29,6 +35,7 @@ from moroccan_stock_intelligence.services.research.orchestrator import (
 from moroccan_stock_intelligence.services.research.store import thesis_history_payload
 from moroccan_stock_intelligence.services.synthesis import get_synthesizer
 from moroccan_stock_intelligence.services.views import (
+    favorites_payload,
     news_payload,
     notifications_payload,
     opportunities_payload,
@@ -140,6 +147,44 @@ def notifications(limit: int = 50) -> dict:
 def sectors() -> dict:
     with SessionFactory() as session:
         return sectors_payload(session)
+
+
+# ---- Favorites: the watchlist, monitored like the portfolio -----------------
+# Separate from the portfolio on purpose: no quantity, no buy price, so no P/L.
+# Being a favorite buys the symbol the urgent crash alert, priority on the capped
+# thesis pushes, its own digest section, and its own tab in the app.
+
+
+@app.get("/api/favorites")
+def favorites() -> dict:
+    """Every favorite, evaluated and sorted most-attention-worthy first."""
+    with SessionFactory() as session:
+        return favorites_payload(session)
+
+
+@app.post("/api/favorites/{symbol}")
+def favorite_add(symbol: str) -> dict:
+    """Star a symbol. Idempotent: starring twice is a no-op, not an error."""
+    with SessionFactory() as session:
+        favorite = add_favorite(session, symbol)
+        if favorite is None:
+            raise HTTPException(status_code=404, detail="symbol not found")
+        session.commit()
+        return {"symbol": favorite.symbol, "is_favorite": True, "favorites": load_favorites(session)}
+
+
+@app.delete("/api/favorites/{symbol}")
+def favorite_remove(symbol: str) -> dict:
+    """Un-star a symbol. Removing one that was never starred is a no-op, not a 404."""
+    with SessionFactory() as session:
+        removed = remove_favorite(session, symbol)
+        session.commit()
+        return {
+            "symbol": symbol.upper(),
+            "is_favorite": False,
+            "removed": removed,
+            "favorites": load_favorites(session),
+        }
 
 
 @app.get("/api/vapid-public-key")
