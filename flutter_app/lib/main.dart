@@ -88,26 +88,55 @@ Future<void> refreshFavorites() async {
   }
 }
 
-/// Star / un-star a symbol. Returns the server's view of the new state, so the UI
-/// never drifts from the source of truth that actually drives the alerts.
+/// Star / un-star a symbol. The new state comes from the server's response, so the
+/// stars never drift from the source of truth that actually drives the alerts.
+///
+/// Never throws: a failed call leaves the star as it was rather than lying about a
+/// favorite that was not saved. Returns the state now in effect.
 Future<bool> toggleFavorite(String symbol, bool isFavorite) async {
-  final r = await apiSend(isFavorite ? 'DELETE' : 'POST', 'api/favorites/$symbol');
-  final now = (r['is_favorite'] as bool?) ?? !isFavorite;
-  final next = Set<String>.from(favoriteSymbols.value);
-  now ? next.add(symbol) : next.remove(symbol);
-  favoriteSymbols.value = next; // notifies every listening page at once
-  return now;
+  try {
+    final r = await apiSend(isFavorite ? 'DELETE' : 'POST', 'api/favorites/$symbol');
+    final now = (r['is_favorite'] as bool?) ?? !isFavorite;
+    final next = Set<String>.from(favoriteSymbols.value);
+    now ? next.add(symbol) : next.remove(symbol);
+    favoriteSymbols.value = next; // notifies every star and page at once
+    return now;
+  } catch (_) {
+    return isFavorite; // unchanged: the server did not accept the toggle
+  }
 }
 
-Widget favoriteStar({required bool active, required VoidCallback onTap, double size = 20}) =>
-    IconButton(
-      onPressed: onTap,
-      visualDensity: VisualDensity.compact,
-      padding: EdgeInsets.zero,
-      constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
-      tooltip: active ? 'Retirer des favoris' : 'Suivre cette action',
-      icon: Icon(active ? Icons.star : Icons.star_border, color: active ? amber : muted, size: size),
-    );
+/// The star. Drop it next to any symbol, in any tab.
+///
+/// It reads and writes the shared `favoriteSymbols` notifier, so it needs no state
+/// from its parent and stays in sync with every other star in the app: starring in
+/// Opportunités lights up the same stock in Marché and adds it to Favoris, live.
+/// Each star listens for itself, so a toggle rebuilds one icon, not the whole list.
+class SymbolStar extends StatelessWidget {
+  const SymbolStar({super.key, required this.symbol, this.size = 20});
+  final String symbol;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder<Set<String>>(
+        valueListenable: favoriteSymbols,
+        builder: (context, starred, _) {
+          final active = starred.contains(symbol);
+          return IconButton(
+            onPressed: () => toggleFavorite(symbol, active),
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+            tooltip: active ? 'Retirer des favoris' : 'Suivre cette action',
+            icon: Icon(
+              active ? Icons.star : Icons.star_border,
+              color: active ? amber : muted,
+              size: size,
+            ),
+          );
+        },
+      );
+}
 
 String fmt(num? v, [int d = 2]) {
   if (v == null) return 'n/a';
@@ -395,6 +424,9 @@ Widget _holdingCard(BuildContext context, Map<String, dynamic> h) {
           ]),
         ),
         badge(sell ? 'ÉVITER' : 'ACHETER'),
+        // Holding it does not watch it: the two lists are independent, so a held
+        // stock can still be starred (or not) like any other.
+        SymbolStar(symbol: '${h['symbol']}', size: 18),
       ]),
       const SizedBox(height: 10),
       Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
@@ -457,8 +489,6 @@ class _FavoritesPageState extends State<FavoritesPage> {
     }
   }
 
-  // toggleFavorite updates the shared notifier, which triggers _load via the listener.
-  Future<void> _unfavorite(String symbol) => toggleFavorite(symbol, true);
 
   @override
   Widget build(BuildContext context) {
@@ -493,8 +523,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
             )
           else
             ..._favorites.asMap().entries.map(
-                  (e) => _favoriteCard(context, e.value as Map<String, dynamic>, _unfavorite)
-                      .enter(e.key),
+                  (e) => _favoriteCard(context, e.value as Map<String, dynamic>).enter(e.key),
                 ),
         ],
       ),
@@ -502,11 +531,7 @@ class _FavoritesPageState extends State<FavoritesPage> {
   }
 }
 
-Widget _favoriteCard(
-  BuildContext context,
-  Map<String, dynamic> f,
-  Future<void> Function(String) onRemove,
-) {
+Widget _favoriteCard(BuildContext context, Map<String, dynamic> f) {
   final variation = f['daily_variation'] as num?;
   final score = f['buy_score'] as num?;
   final risks = (f['risks'] as List?) ?? [];
@@ -526,8 +551,8 @@ Widget _favoriteCard(
                 style: const TextStyle(color: muted, fontSize: 12), overflow: TextOverflow.ellipsis),
           ]),
         ),
-        // Always starred: this list only ever contains favorites.
-        favoriteStar(active: true, onTap: () => onRemove(f['symbol'] as String)),
+        // Un-starring here empties the shared set, which reloads this very list.
+        SymbolStar(symbol: '${f['symbol']}'),
       ]),
       const SizedBox(height: 10),
       Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
@@ -598,20 +623,6 @@ class _MarketPageState extends State<MarketPage> {
     }
   }
 
-  /// Star state is rendered from the shared `favoriteSymbols` notifier, so we only
-  /// need to call the server here — the row (and the Favoris tab) redraw themselves.
-  Future<void> _toggleFavorite(String symbol) async {
-    try {
-      await toggleFavorite(symbol, favoriteSymbols.value.contains(symbol));
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Favori non enregistré : réessayez.')),
-        );
-      }
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return Column(children: [
@@ -667,34 +678,17 @@ class _MarketPageState extends State<MarketPage> {
       Expanded(
         child: _loading
             ? const Center(child: CircularProgressIndicator(color: accent))
-            : ValueListenableBuilder<Set<String>>(
-                valueListenable: favoriteSymbols,
-                builder: (c, starred, _) => ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(14, 6, 14, 24),
-                  itemCount: _stocks.length,
-                  itemBuilder: (c, i) {
-                    final s = _stocks[i] as Map<String, dynamic>;
-                    final symbol = s['symbol'] as String;
-                    return _stockRow(
-                      context,
-                      s,
-                      isFavorite: starred.contains(symbol),
-                      onToggleFavorite: () => _toggleFavorite(symbol),
-                    ).enter(i);
-                  },
-                ),
+            : ListView.builder(
+                padding: const EdgeInsets.fromLTRB(14, 6, 14, 24),
+                itemCount: _stocks.length,
+                itemBuilder: (c, i) => _stockRow(context, _stocks[i] as Map<String, dynamic>).enter(i),
               ),
       ),
     ]);
   }
 }
 
-Widget _stockRow(
-  BuildContext context,
-  Map<String, dynamic> s, {
-  required bool isFavorite,
-  required VoidCallback onToggleFavorite,
-}) {
+Widget _stockRow(BuildContext context, Map<String, dynamic> s) {
   final trend = s['trend'];
   final tcol = trend == 'haussier' ? green : (trend == 'baissier' ? red : muted);
   final icon = trend == 'haussier' ? Icons.trending_up : (trend == 'baissier' ? Icons.trending_down : Icons.trending_flat);
@@ -725,7 +719,7 @@ Widget _stockRow(
         const SizedBox(height: 2),
         Text('${s['buy_score'] == null ? 'n/a' : (s['buy_score'] as num).round()}', style: const TextStyle(color: muted, fontSize: 11, fontWeight: FontWeight.w700)),
       ]),
-      favoriteStar(active: isFavorite, onTap: onToggleFavorite, size: 19),
+      SymbolStar(symbol: '${s['symbol']}', size: 19),
     ]),
   );
 }
@@ -823,6 +817,7 @@ Widget _oppCard(BuildContext context, Map<String, dynamic> o) {
             badge(o['label'] ?? 'NEUTRE'),
             const Spacer(),
             Text('${signed(o['daily_variation'])}%', style: TextStyle(color: plc(o['daily_variation']), fontSize: 12, fontWeight: FontWeight.w600)),
+            SymbolStar(symbol: '${o['symbol']}', size: 18),
           ]),
           Text(o['company_name'] ?? '', style: const TextStyle(color: muted, fontSize: 12), overflow: TextOverflow.ellipsis),
           const SizedBox(height: 6),
@@ -1012,6 +1007,7 @@ Widget _aHoldingCard(BuildContext context, Map<String, dynamic> h) {
           Text('Risque ${risk.round()}',
               style: TextStyle(
                   color: risk >= 60 ? red : muted, fontSize: 11, fontWeight: FontWeight.w700)),
+        SymbolStar(symbol: '${h['symbol']}', size: 18),
       ]),
       const SizedBox(height: 6),
       Text(h['suggested_action'] ?? '',
@@ -1036,6 +1032,7 @@ Widget _aOppCard(BuildContext context, Map<String, dynamic> o, String horizon) {
             const Spacer(),
             Text('Confiance ${(o['confidence'] as num?)?.round() ?? 0}',
                 style: const TextStyle(color: muted, fontSize: 11, fontWeight: FontWeight.w600)),
+            SymbolStar(symbol: '${o['symbol']}', size: 18),
           ]),
           Text(o['company_name'] ?? '',
               style: const TextStyle(color: muted, fontSize: 12), overflow: TextOverflow.ellipsis),
@@ -1262,6 +1259,7 @@ Widget _reportBody(Map<String, dynamic> d, ScrollController ctrl, String horizon
               style: const TextStyle(color: muted, fontSize: 12.5)),
         ]),
       ),
+      SymbolStar(symbol: '${d['symbol']}', size: 24),
       badge('${focus['recommendation_label'] ?? ''}', recColor('${focus['recommendation']}')),
     ]),
     const SizedBox(height: 4),
@@ -1739,6 +1737,7 @@ class _NewsPageState extends State<NewsPage> {
       itemCount: _news.length,
       itemBuilder: (c, i) {
         final n = _news[i] as Map<String, dynamic>;
+        final symbol = n['symbol'];
         return glassCard(
           onTap: () {
             final url = n['url'];
@@ -1750,7 +1749,10 @@ class _NewsPageState extends State<NewsPage> {
             Row(children: [
               const Icon(Icons.public, size: 13, color: muted),
               const SizedBox(width: 5),
-              Expanded(child: Text('${n['source'] ?? ''}${n['symbol'] != null ? '  ·  ${n['symbol']}' : ''}', style: const TextStyle(color: muted, fontSize: 11.5), overflow: TextOverflow.ellipsis)),
+              Expanded(child: Text('${n['source'] ?? ''}${symbol != null ? '  ·  $symbol' : ''}', style: const TextStyle(color: muted, fontSize: 11.5), overflow: TextOverflow.ellipsis)),
+              // Only when the item was actually linked to a listed stock — most
+              // official notices are, but some are market-wide and have no symbol.
+              if (symbol != null) SymbolStar(symbol: '$symbol', size: 17),
               const Icon(Icons.open_in_new, size: 13, color: muted),
             ]),
           ]),
@@ -1882,26 +1884,6 @@ void showStockDetail(BuildContext context, String symbol) {
   );
 }
 
-/// The star inside the detail sheet. Reads the shared notifier like every other star,
-/// so toggling here also updates the Marché row behind the sheet and the Favoris tab.
-class _DetailStar extends StatelessWidget {
-  const _DetailStar({required this.symbol});
-  final String symbol;
-
-  @override
-  Widget build(BuildContext context) => ValueListenableBuilder<Set<String>>(
-        valueListenable: favoriteSymbols,
-        builder: (c, starred, _) {
-          final active = starred.contains(symbol);
-          return favoriteStar(
-            active: active,
-            onTap: () => toggleFavorite(symbol, active),
-            size: 24,
-          );
-        },
-      );
-}
-
 Widget _detailBody(Map<String, dynamic> d, ScrollController ctrl) {
   final s = d['score'] as Map<String, dynamic>?;
   final mom = d['momentum'] as Map<String, dynamic>? ?? {};
@@ -1916,7 +1898,7 @@ Widget _detailBody(Map<String, dynamic> d, ScrollController ctrl) {
           Text('${d['company_name'] ?? ''}', style: const TextStyle(color: muted, fontSize: 13)),
         ]),
       ),
-      _DetailStar(symbol: '${d['symbol']}'),
+      SymbolStar(symbol: '${d['symbol']}', size: 24),
       if (s != null) badge(s['label'] ?? 'NEUTRE'),
     ]),
     const SizedBox(height: 12),
