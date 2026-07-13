@@ -70,6 +70,74 @@ Future<dynamic> apiSend(String method, String path) async {
   return (body == null || body.isEmpty) ? <String, dynamic>{} : jsonDecode(body);
 }
 
+// ---------------------------- data freshness ------------------------------ //
+// Opening the app re-collects the market so the numbers on screen are current.
+// The collection is silent (no Telegram, no push — that stays the scheduler's job)
+// and the server skips it when the data is younger than its cooldown, because
+// Casablanca Bourse publishes with a ~15 min delay and scraping faster returns
+// nothing new.
+
+/// Bumped once fresh data has landed. Every tab listens: they live in an
+/// IndexedStack, so they are built once and would otherwise keep showing whatever
+/// they loaded at launch.
+final dataRevision = ValueNotifier<int>(0);
+
+/// True while a collection is in flight, so the header can say so.
+final refreshing = ValueNotifier<bool>(false);
+
+/// Collect, then tell every tab to reload.
+///
+/// Never throws: if the collection fails the app keeps showing the data it already
+/// had rather than breaking on launch. Returns what actually happened, so a caller
+/// with a visible button can report the truth instead of always claiming success:
+/// `done` | `fresh` (inside the cooldown) | `busy` | `timeout` | `error`.
+Future<String> refreshData({bool force = false}) async {
+  if (refreshing.value) return 'busy'; // a collection is already in flight
+  refreshing.value = true;
+  try {
+    final r = await apiSend('POST', 'api/refresh${force ? '?force=true' : ''}');
+    if (r['status'] == 'fresh') return 'fresh'; // already up to date, nothing scraped
+
+    // The scrape takes ~30 s. Poll until it lands, with a ceiling so a wedged
+    // collection can never leave the header spinning forever.
+    for (var i = 0; i < 40; i++) {
+      await Future.delayed(const Duration(seconds: 3));
+      final s = await api('api/refresh/status');
+      if (s['running'] != true) {
+        dataRevision.value++; // -> every tab reloads
+        return s['last_error'] == null ? 'done' : 'error';
+      }
+    }
+    return 'timeout';
+  } catch (_) {
+    return 'error'; // offline, or the sources are down: the cached data still shows
+  } finally {
+    refreshing.value = false;
+  }
+}
+
+/// Wires a tab's data loading to the global refresh.
+///
+/// The tabs sit in an IndexedStack, so `initState` runs once at launch and never
+/// again — without this, a tab would still show its launch-time data long after a
+/// refresh brought in new prices.
+mixin ReloadsOnRefresh<T extends StatefulWidget> on State<T> {
+  /// Re-fetch this tab's data. Called whenever fresh market data lands.
+  void reload();
+
+  @override
+  void initState() {
+    super.initState();
+    dataRevision.addListener(reload);
+  }
+
+  @override
+  void dispose() {
+    dataRevision.removeListener(reload);
+    super.dispose();
+  }
+}
+
 /// The starred symbols, shared by every page.
 ///
 /// The pages live inside an IndexedStack, so they are built once and kept alive —
@@ -220,6 +288,7 @@ class _HomeShellState extends State<HomeShell> {
   void initState() {
     super.initState();
     refreshFavorites(); // seed the stars once, before any page renders one
+    refreshData(); // and bring the market up to date; tabs reload when it lands
   }
 
   @override
@@ -242,6 +311,21 @@ class _HomeShellState extends State<HomeShell> {
               const SizedBox(width: 10),
               const Text('Bourse Casablanca',
                   style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700, letterSpacing: -0.2)),
+              const Spacer(),
+              ValueListenableBuilder<bool>(
+                valueListenable: refreshing,
+                builder: (c, busy, _) => busy
+                    ? Row(children: const [
+                        SizedBox(
+                          width: 12,
+                          height: 12,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: accent),
+                        ),
+                        SizedBox(width: 7),
+                        Text('Mise à jour…', style: TextStyle(color: muted, fontSize: 11.5)),
+                      ])
+                    : const SizedBox.shrink(),
+              ),
             ]),
           ),
           Expanded(child: IndexedStack(index: _idx, children: _pages)),
@@ -280,7 +364,10 @@ class PortfolioPage extends StatefulWidget {
   State<PortfolioPage> createState() => _PortfolioPageState();
 }
 
-class _PortfolioPageState extends State<PortfolioPage> {
+class _PortfolioPageState extends State<PortfolioPage> with ReloadsOnRefresh<PortfolioPage> {
+  @override
+  void reload() => _load();
+
   Map<String, dynamic>? _data;
   String? _error;
   String _notif = 'Mises à jour toutes les 2h (9h–17h, jours ouvrés) et alertes.';
@@ -303,17 +390,19 @@ class _PortfolioPageState extends State<PortfolioPage> {
     }
   }
 
+  /// Forces a collection past the cooldown. Silent — it refreshes the data, it does
+  /// not send a digest. (The digest-on-demand path is /api/run-now, still there.)
   Future<void> _runNow() async {
     setState(() => _notif = '⏳ Collecte en cours… (~30 s)');
-    try {
-      final r = await appRunNow().toDart;
-      setState(() => _notif = r.toDart);
-      await Future.delayed(const Duration(seconds: 33));
-      await _load();
-      setState(() => _notif = '✅ Données actualisées.');
-    } catch (e) {
-      setState(() => _notif = 'Erreur : $e');
-    }
+    final outcome = await refreshData(force: true); // bumps dataRevision -> tabs reload
+    if (!mounted) return;
+    setState(() => _notif = switch (outcome) {
+          'done' => '✅ Données actualisées.',
+          'fresh' => '✅ Déjà à jour.',
+          'busy' => '⏳ Une mise à jour est déjà en cours…',
+          'timeout' => '⚠️ La collecte est plus longue que prévu — réessayez dans un instant.',
+          _ => '⚠️ Collecte impossible : sources indisponibles.',
+        });
   }
 
   @override
@@ -449,7 +538,10 @@ class FavoritesPage extends StatefulWidget {
   State<FavoritesPage> createState() => _FavoritesPageState();
 }
 
-class _FavoritesPageState extends State<FavoritesPage> {
+class _FavoritesPageState extends State<FavoritesPage> with ReloadsOnRefresh<FavoritesPage> {
+  @override
+  void reload() => _load();
+
   List _favorites = [];
   bool _loading = true;
   String? _error;
@@ -596,7 +688,10 @@ class MarketPage extends StatefulWidget {
   State<MarketPage> createState() => _MarketPageState();
 }
 
-class _MarketPageState extends State<MarketPage> {
+class _MarketPageState extends State<MarketPage> with ReloadsOnRefresh<MarketPage> {
+  @override
+  void reload() => _load();
+
   List _stocks = [];
   String _sort = 'score';
   String _q = '';
@@ -731,7 +826,10 @@ class OppsPage extends StatefulWidget {
   State<OppsPage> createState() => _OppsPageState();
 }
 
-class _OppsPageState extends State<OppsPage> {
+class _OppsPageState extends State<OppsPage> with ReloadsOnRefresh<OppsPage> {
+  @override
+  void reload() => _load();
+
   List _opps = [];
   int _min = 0;
   bool _loading = true;
@@ -870,7 +968,10 @@ class AnalysisPage extends StatefulWidget {
   State<AnalysisPage> createState() => _AnalysisPageState();
 }
 
-class _AnalysisPageState extends State<AnalysisPage> {
+class _AnalysisPageState extends State<AnalysisPage> with ReloadsOnRefresh<AnalysisPage> {
+  @override
+  void reload() => _load();
+
   String _horizon = 'short';
   List _opps = [];
   List _holdings = [];
@@ -1704,7 +1805,10 @@ class NewsPage extends StatefulWidget {
   State<NewsPage> createState() => _NewsPageState();
 }
 
-class _NewsPageState extends State<NewsPage> {
+class _NewsPageState extends State<NewsPage> with ReloadsOnRefresh<NewsPage> {
+  @override
+  void reload() => _load();
+
   List _news = [];
   bool _loading = true;
 
@@ -1769,7 +1873,10 @@ class NotificationsPage extends StatefulWidget {
   State<NotificationsPage> createState() => _NotificationsPageState();
 }
 
-class _NotificationsPageState extends State<NotificationsPage> {
+class _NotificationsPageState extends State<NotificationsPage> with ReloadsOnRefresh<NotificationsPage> {
+  @override
+  void reload() => _load();
+
   List _items = [];
   bool _loading = true;
 
