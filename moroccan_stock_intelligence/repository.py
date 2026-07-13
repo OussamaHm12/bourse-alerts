@@ -719,6 +719,15 @@ def load_thesis_changes(
     )
 
 
+def latest_price_observed_at(session: Session) -> datetime | None:
+    """When the market was last collected. None on an empty database.
+
+    This is what tells the app whether the data it is about to show is stale enough
+    to be worth re-scraping.
+    """
+    return session.scalar(select(func.max(Price.observed_at)))
+
+
 def load_price_frame(session: Session) -> pd.DataFrame:
     rows = session.execute(
         select(

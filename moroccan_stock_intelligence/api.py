@@ -26,6 +26,12 @@ from moroccan_stock_intelligence.services.investment_analysis import (
     analyze_symbol,
 )
 from moroccan_stock_intelligence.services.push import save_subscription, send_push_to_all
+from moroccan_stock_intelligence.services.refresh import (
+    STATE,
+    is_stale,
+    refresh_market_data,
+    status_payload,
+)
 from moroccan_stock_intelligence.services.research.knowledge import knowledge_payload
 from moroccan_stock_intelligence.services.research.learning import performance_payload
 from moroccan_stock_intelligence.services.research.orchestrator import (
@@ -215,13 +221,50 @@ def push_test() -> dict:
 
 @app.post("/api/run-now")
 async def run_now(background_tasks: BackgroundTasks) -> dict:
-    """Manually trigger a collect + analyze + notify run (works any day, weekends included).
+    """Manually trigger a collect + analyze + NOTIFY run (Telegram digest + push).
 
-    Runs in the background so the request returns immediately; the push arrives and
-    the overview refreshes once the ~30s collection completes.
+    This is the "send me a digest now" action. For merely bringing the data up to
+    date — what opening the app does — use /api/refresh, which is silent.
     """
     background_tasks.add_task(run_update_now, SessionFactory, "Manuel (bouton)")
     return {"queued": True}
+
+
+# ---- On-open refresh: collect + recompute, silently ------------------------
+# Called when the app launches, so the owner never looks at stale numbers. It does
+# NOT notify: firing the digest job on every launch would Telegram + push the owner
+# several times a day for nothing.
+
+
+@app.post("/api/refresh")
+async def refresh(background_tasks: BackgroundTasks, force: bool = False) -> dict:
+    """Re-collect the market unless it was already collected recently.
+
+    Returns immediately; the scrape runs in the background. `status` tells the app
+    whether to poll:
+      * "fresh"   — data is inside the cooldown, nothing to do
+      * "running" — a refresh (or a scheduled job) is already collecting
+      * "started" — a refresh was launched; poll /api/refresh/status until it ends
+    """
+    with SessionFactory() as session:
+        if not force and not is_stale(session):
+            return {"status": "fresh", **status_payload(session)}
+        # Claim the slot before responding: FastAPI runs background tasks after the
+        # response, so claiming inside the task would let an early poll see
+        # running=False and wrongly conclude the collection had already finished.
+        if not STATE.try_begin():
+            return {"status": "running", **status_payload(session)}
+        payload = status_payload(session)
+
+    background_tasks.add_task(refresh_market_data, SessionFactory)
+    return {"status": "started", **payload}
+
+
+@app.get("/api/refresh/status")
+def refresh_status() -> dict:
+    """Polled by the app while a refresh runs, so it knows when to reload."""
+    with SessionFactory() as session:
+        return status_payload(session)
 
 
 # ---- Explainable investment analysis --------------------------------------

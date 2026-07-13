@@ -430,6 +430,34 @@ Testing strategy:
 - Add regression fixtures whenever a source changes HTML shape.
 - Add integration tests using saved HTML fixtures before relying on new data sources.
 
+## Refresh on open
+
+Launching the app re-collects the market, so you never look at yesterday's numbers.
+The tabs keep showing the cached data while it runs (the header says "Mise à jour…"),
+then all reload at once when the fresh prices land.
+
+It is **silent by design**: it collects, persists and recomputes, but sends no Telegram
+and no push. Reusing the digest job here would have notified you every single time you
+opened the app. `/api/run-now` still exists for a digest on demand.
+
+Two guards, because a collection writes ~80 new price rows (`observed_at` is the
+collection instant):
+
+- **Cooldown** — `APP_REFRESH_COOLDOWN_SECONDS` (default 900). Casablanca Bourse
+  publishes with a stated ~15 min delay, so scraping faster returns data we already
+  have. Inside the cooldown the server answers `fresh` and skips the fetch. The
+  **Actualiser** button forces past it.
+- **Single-flight** — two launches (or a launch landing on a scheduled job) never
+  scrape concurrently. The slot is claimed *before* the endpoint responds, so an app
+  polling milliseconds later cannot mistake "not started yet" for "already finished".
+  A collection presumed dead after 5 min releases the slot rather than wedging the app.
+
+| Endpoint | Method | Effect |
+| --- | --- | --- |
+| `/api/refresh` | POST | Collect unless fresh. `?force=true` ignores the cooldown. Returns `fresh` / `running` / `started` |
+| `/api/refresh/status` | GET | Polled while a collection runs; carries `as_of` and `data_age_seconds` |
+| `/api/run-now` | POST | Collect **and notify** (Telegram digest + push) |
+
 ## Operations Notes
 
 - Keep `data/market.db` backed up if running outside GitHub Actions.

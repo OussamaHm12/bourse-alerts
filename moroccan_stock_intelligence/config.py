@@ -65,6 +65,13 @@ class Settings:
     report_cache_seconds: int = int(os.getenv("REPORT_CACHE_SECONDS", "21600"))
     market_cache_seconds: int = int(os.getenv("MARKET_CACHE_SECONDS", "900"))
 
+    # --- On-open refresh ---
+    # Opening the app re-collects the market, but never faster than this. Casablanca
+    # Bourse publishes prices with a stated ~15 min delay, so a shorter cooldown would
+    # re-scrape (and store ~80 new price rows) to obtain data we already have.
+    # The Actualiser button forces past it.
+    app_refresh_cooldown_seconds: int = int(os.getenv("APP_REFRESH_COOLDOWN_SECONDS", "900"))
+
     # --- Learning engine (Phase 3) ---
     # Horizon -> days after which a prediction becomes falsifiable.
     eval_days_short: int = int(os.getenv("EVAL_DAYS_SHORT", "10"))
