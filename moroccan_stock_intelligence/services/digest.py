@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from moroccan_stock_intelligence.config import settings
 from moroccan_stock_intelligence.services.analytics import MetricSet
-from moroccan_stock_intelligence.services.favorites import FavoriteEvaluation, sort_for_attention
+from moroccan_stock_intelligence.services.favorites import FavoriteEvaluation, sort_by_score
 from moroccan_stock_intelligence.services.portfolio import HoldingEvaluation, Portfolio
 from moroccan_stock_intelligence.services.scoring import ScoreResult
 
@@ -142,7 +142,7 @@ def _favorites_intraday_lines(favorites: list[FavoriteEvaluation]) -> list[str]:
     if not favorites:
         return []
 
-    watched = sort_for_attention(favorites)
+    watched = sort_by_score(favorites)
     lines = [
         "⭐ Favoris : "
         + ", ".join(f"{_esc(f.symbol)} {_signed(f.daily_variation, 1)}%" for f in watched[:5])
@@ -159,7 +159,7 @@ def _favorites_intraday_lines(favorites: list[FavoriteEvaluation]) -> list[str]:
 def _favorites_section(favorites: list[FavoriteEvaluation]) -> list[str]:
     """The watchlist block: no P/L (we own nothing), just what moved and what it means."""
     lines = ["<b>⭐ Mes favoris</b>"]
-    for favorite in sort_for_attention(favorites):
+    for favorite in sort_by_score(favorites):
         variation = favorite.daily_variation
         # A stock with no collected price is neither up nor down — a green dot here
         # would read as "it rose", which is a claim the data does not support.

@@ -340,8 +340,8 @@ so it has no P/L and never produces a SELL/HOLD advice. What it buys is *attenti
   is never crowded out by one on a stock you have never looked at.
 - **Its own digest section.** The 09:00/17:00 digests carry a `⭐ Mes favoris` block, and
   the intraday points carry a one-line recap plus a detail line for anything moving ≥5%.
-- **Its own tab** in the app, sorted most-attention-worthy first (crashes, then big moves,
-  then by score).
+- **Its own tab** in the app, ordered by opportunity score, best first. A favorite with no
+  collected price sorts last rather than as a zero: a missing score is not a bad one.
 
 The two lists are independent: holding a stock does not favorite it, and vice-versa. A
 stock that is **both** held and favorited is alerted **once** — as a holding, which is the
