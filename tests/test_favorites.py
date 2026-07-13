@@ -18,9 +18,10 @@ from moroccan_stock_intelligence.services.digest import (
     build_urgent_favorite_alert,
 )
 from moroccan_stock_intelligence.services.favorites import (
+    FavoriteEvaluation,
     evaluate_favorite,
     evaluate_favorites,
-    sort_for_attention,
+    sort_by_score,
 )
 from moroccan_stock_intelligence.services.portfolio import Portfolio
 from moroccan_stock_intelligence.services.scoring import score_opportunity
@@ -163,13 +164,51 @@ def test_crash_dominates_the_headline():
     assert "maintenant" in evaluation.headline
 
 
-def test_sort_for_attention_puts_the_crash_first():
-    calm = evaluate_favorite("CALM", _metric(symbol="CALM", daily_variation=0.2), None)
-    crashing = evaluate_favorite("CRSH", _metric(symbol="CRSH", daily_variation=-7.0), None)
-    moving = evaluate_favorite("MOVE", _metric(symbol="MOVE", daily_variation=3.5), None)
+def _scored(symbol: str, buy_score: float | None) -> FavoriteEvaluation:
+    """A favorite whose only distinguishing feature is its score."""
+    return FavoriteEvaluation(
+        symbol=symbol,
+        company_name=symbol,
+        sector=None,
+        price=100.0,
+        daily_variation=0.0,
+        momentum_30d=None,
+        volume_anomaly=None,
+        buy_score=buy_score,
+        avoid_score=None,
+        label="NEUTRE",
+        headline="",
+        reasons=[],
+        risks=[],
+    )
 
-    ordered = sort_for_attention([calm, moving, crashing])
-    assert [e.symbol for e in ordered] == ["CRSH", "MOVE", "CALM"]
+
+def test_favorites_are_ordered_by_score_best_first():
+    ordered = sort_by_score([_scored("LOW", 22.0), _scored("TOP", 81.0), _scored("MID", 55.0)])
+    assert [e.symbol for e in ordered] == ["TOP", "MID", "LOW"]
+
+
+def test_a_favorite_without_a_score_sorts_last_not_as_a_zero():
+    """No price collected means we do not know how it stands — that is not the same
+    as standing badly, and it must not outrank a stock we genuinely scored low."""
+    ordered = sort_by_score([_scored("UNKNOWN", None), _scored("WEAK", 3.0)])
+    assert [e.symbol for e in ordered] == ["WEAK", "UNKNOWN"]
+
+
+def test_equal_scores_break_on_the_symbol_so_the_order_is_stable():
+    ordered = sort_by_score([_scored("ZZZ", 50.0), _scored("AAA", 50.0)])
+    assert [e.symbol for e in ordered] == ["AAA", "ZZZ"]
+
+
+def test_a_crash_no_longer_jumps_the_queue_but_still_leads_its_headline():
+    """Ordering is by score now. Urgency did not disappear: the crashing favorite
+    still gets its own Telegram alert and its ⚠️ line in the intraday digest."""
+    crashing = evaluate_favorite("CRSH", _metric(symbol="CRSH", daily_variation=-7.0), None)
+    strong = evaluate_favorite("TOP", _metric(symbol="TOP"), score_opportunity(_metric()))
+
+    ordered = sort_by_score([crashing, strong])
+    assert ordered[0].symbol == "TOP"  # scored, so it outranks the unscored crash
+    assert "Chute" in crashing.headline
 
 
 # --------------------------------------------------------------------------- #
@@ -223,7 +262,7 @@ def test_push_body_only_mentions_favorites_that_moved():
 # API payload                                                                   #
 # --------------------------------------------------------------------------- #
 
-def test_favorites_payload_sorts_by_attention(session):
+def test_favorites_payload_is_ordered_by_score(session):
     _seed_stock(session, "CALM", "Calme", 100.0, 0.3)
     _seed_stock(session, "CRSH", "Chute", 100.0, -8.0)
     add_favorite(session, "CALM")
@@ -231,9 +270,11 @@ def test_favorites_payload_sorts_by_attention(session):
     session.commit()
 
     payload = favorites_payload(session)
+    scores = [f["buy_score"] for f in payload["favorites"]]
 
     assert payload["count"] == 2
-    assert payload["favorites"][0]["symbol"] == "CRSH"  # the crash outranks insertion order
+    # Best score first, whatever the insertion order or the day's moves were.
+    assert scores == sorted(scores, key=lambda s: (s is None, -(s or 0)))
     assert "net_pl" not in payload["favorites"][0]
 
 

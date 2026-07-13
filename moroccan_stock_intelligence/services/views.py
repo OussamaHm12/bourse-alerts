@@ -14,7 +14,7 @@ from moroccan_stock_intelligence.repository import (
     load_symbol_history,
 )
 from moroccan_stock_intelligence.services.analytics import MetricSet, compute_metrics
-from moroccan_stock_intelligence.services.favorites import evaluate_favorites, sort_for_attention
+from moroccan_stock_intelligence.services.favorites import evaluate_favorites, sort_by_score
 from moroccan_stock_intelligence.services.portfolio import (
     HoldingEvaluation,
     Portfolio,
@@ -98,15 +98,15 @@ def market_payload(metrics: list[MetricSet], scores: dict[str, ScoreResult]) -> 
 
 
 def favorites_payload(session: Session) -> dict:
-    """The watchlist tab: every favorite, most attention-worthy first.
+    """The watchlist tab: every favorite, best opportunity score first.
 
-    No P/L and no SELL/HOLD advice — we hold none of these. `watched` is what the
-    app stars, so the star state comes from the same source of truth as the alerts.
+    No P/L and no SELL/HOLD advice — we hold none of these. `symbols` is what the app
+    stars, so the star state comes from the same source of truth as the alerts.
     """
     metrics, scores = compute_state(session)
     metrics_by_symbol = {metric.symbol: metric for metric in metrics}
     symbols = load_favorite_symbols(session)
-    evaluations = sort_for_attention(evaluate_favorites(symbols, metrics_by_symbol, scores))
+    evaluations = sort_by_score(evaluate_favorites(symbols, metrics_by_symbol, scores))
     return {
         "as_of": datetime.now(UTC).isoformat(),
         "count": len(evaluations),

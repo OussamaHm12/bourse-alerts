@@ -41,19 +41,19 @@ class FavoriteEvaluation:
     risks: list[str]
 
 
-def _headline(metric: MetricSet | None, score: ScoreResult | None, label: str) -> str:
-    """One sentence: why this favorite deserves a glance today (or why it doesn't).
-
-    Ordered by what would actually make the owner act, most urgent first.
-    """
-    if metric is None or metric.price is None:
-        return "Cours indisponible : aucune donnée de marché collectée pour ce titre."
-
-    variation = metric.daily_variation
-    if variation is not None and variation <= -5:
+def _move_headline(variation: float | None) -> str | None:
+    """A big move today outranks anything the setup could say. None when it is calm."""
+    if variation is None:
+        return None
+    if variation <= -5:
         return f"Chute de {variation:+.1f}% en séance — à regarder maintenant."
-    if variation is not None and variation >= 5:
+    if variation >= 5:
         return f"Envolée de {variation:+.1f}% en séance."
+    return None
+
+
+def _setup_headline(metric: MetricSet, score: ScoreResult | None, label: str) -> str:
+    """What the configuration says, when the day itself is unremarkable."""
     if label == "ÉVITER":
         return "Configuration défavorable : le risque technique domine."
     if label == "ACHETER":
@@ -67,6 +67,13 @@ def _headline(metric: MetricSet | None, score: ScoreResult | None, label: str) -
     if score is not None and score.buy_score >= 50:
         return "Rien de neuf : la configuration reste correcte, sans catalyseur."
     return "Rien de neuf sur ce titre aujourd'hui."
+
+
+def _headline(metric: MetricSet | None, score: ScoreResult | None, label: str) -> str:
+    """One sentence: why this favorite deserves a glance today (or why it doesn't)."""
+    if metric is None or metric.price is None:
+        return "Cours indisponible : aucune donnée de marché collectée pour ce titre."
+    return _move_headline(metric.daily_variation) or _setup_headline(metric, score, label)
 
 
 def evaluate_favorite(
@@ -105,22 +112,21 @@ def evaluate_favorites(
     ]
 
 
-def sort_for_attention(evaluations: list[FavoriteEvaluation]) -> list[FavoriteEvaluation]:
-    """Most attention-worthy first: crashes, then spikes, then the rest by score.
+def sort_by_score(evaluations: list[FavoriteEvaluation]) -> list[FavoriteEvaluation]:
+    """Best opportunity score first — the order the favorites are listed in.
 
-    This is what the digest and the app tab both show, so the favorite that needs
-    the owner is never buried under the ones that don't.
+    A favorite with no score at all (no price collected for it) sorts last rather
+    than being ranked as if it scored zero: we do not know how it stands, and a
+    missing score is not a bad one. Ties break on the symbol, so the order is stable
+    across runs instead of wobbling with dict iteration.
+
+    Urgency is NOT encoded here. A crashing favorite is surfaced by its own channels:
+    the immediate Telegram alert, and the ⚠️ line the intraday digest gives to
+    anything moving 5% or more.
     """
 
     def key(evaluation: FavoriteEvaluation) -> tuple:
-        variation = evaluation.daily_variation
-        crashing = variation is not None and variation <= -5
-        moving = variation is not None and abs(variation) >= 3
-        return (
-            not crashing,  # crashes first
-            not moving,  # then anything moving hard
-            -(evaluation.buy_score or 0),  # then the best-scoring
-            evaluation.symbol,
-        )
+        score = evaluation.buy_score
+        return (score is None, -(score or 0.0), evaluation.symbol)
 
     return sorted(evaluations, key=key)
