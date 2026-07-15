@@ -174,6 +174,47 @@ def test_backfill_history_raises_history_depth(session, monkeypatch):
     assert load_history_depths(session)["ATW"] == 28  # scoring now sees 28 days
 
 
+def test_history_bootstrap_only_backfills_missing_symbols(monkeypatch):
+    """Self-healing guard: symbols already backfilled are skipped; gaps are retried.
+
+    Skipped on this dev machine (the scheduler imports services.push -> py_vapid,
+    which is not installed here); runs in CI / production where it is.
+    """
+    pytest.importorskip("py_vapid")
+    from datetime import UTC, datetime
+
+    from moroccan_stock_intelligence import scheduler
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
+    with factory() as s:
+        s.add(Stock(symbol="ATW", company_name="A", sector=None))
+        s.add(Stock(symbol="IAM", company_name="B", sector=None))
+        s.flush()
+        atw = s.scalar(select(Stock).where(Stock.symbol == "ATW"))
+        s.add(  # ATW is already backfilled (one history-source row)
+            Price(
+                stock_id=atw.id,
+                observed_at=datetime(2025, 1, 2, 15, 30, tzinfo=UTC),
+                current_price=100.0,
+                source=hist.SOURCE,
+            )
+        )
+        s.commit()
+
+    seen: dict = {}
+
+    def fake_backfill(session, symbols=None, **kwargs):  # noqa: ANN001
+        seen["symbols"] = symbols
+        return {"symbols": len(symbols or []), "seances_stored": 0, "failed": 0}
+
+    monkeypatch.setattr(hist, "backfill_history", fake_backfill)
+    scheduler._history_bootstrap_job(factory)
+    assert seen["symbols"] == ["IAM"]  # ATW skipped, only the gap retried
+    engine.dispose()
+
+
 def test_backfill_history_tolerates_a_symbol_failure(session, monkeypatch):
     session.add(Stock(symbol="MNG", company_name="MANAGEM", sector="Mines"))
     session.commit()
