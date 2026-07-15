@@ -156,6 +156,36 @@ def _feeds_bootstrap_job(session_factory) -> None:  # noqa: ANN001
             LOG.exception("feeds_bootstrap_issuers_failed")
 
 
+def _history_bootstrap_job(session_factory) -> None:  # noqa: ANN001
+    """Seed up to ~3 years of daily history once, if it was never backfilled.
+
+    Forward-only live collection needs months before ``ma200`` / ``momentum_90d`` /
+    the 52-week range mean anything, which keeps the medium/long horizons and their
+    confidence near the floor on a fresh deploy. This one-off pass fixes that.
+
+    Guarded on the history source label so it runs exactly once: any backfilled row
+    means "done". A ``casablanca-bourse.com`` read-timeout skips that symbol (not the
+    run); the manual ``backfill-history`` CLI re-run fills any gaps left behind.
+    """
+    from moroccan_stock_intelligence.services.collectors.history import (
+        SOURCE,
+        backfill_history,
+    )
+
+    with session_factory() as session:
+        try:
+            already = session.scalar(
+                select(func.count()).select_from(Price).where(Price.source == SOURCE)
+            )
+            if already:
+                LOG.info("history_bootstrap_skipped existing_rows=%s", already)
+                return
+            tally = backfill_history(session)
+            LOG.info("history_bootstrap_done %s", tally)
+        except Exception:  # noqa: BLE001 - a scheduled job must never crash the scheduler.
+            LOG.exception("history_bootstrap_failed")
+
+
 def _research_job(session_factory) -> None:  # noqa: ANN001
     """Generate + store a report for every stock, then notify on thesis changes only.
 
@@ -278,6 +308,18 @@ def build_scheduler(session_factory) -> BackgroundScheduler:  # noqa: ANN001
         run_date=datetime.now(ZoneInfo(settings.timezone)) + timedelta(seconds=90),
         args=[session_factory],
         id="feeds_bootstrap",
+        replace_existing=True,
+    )
+    # History backfill: one-off ~3 min after boot, only if never backfilled. Seeds
+    # up to ~3 years of daily séances so the medium/long horizons are trustworthy
+    # immediately instead of after months of forward collection. Spaced after the
+    # feeds bootstrap so the two don't hammer casablanca-bourse.com at once.
+    scheduler.add_job(
+        _history_bootstrap_job,
+        "date",
+        run_date=datetime.now(ZoneInfo(settings.timezone)) + timedelta(seconds=180),
+        args=[session_factory],
+        id="history_bootstrap",
         replace_existing=True,
     )
     # Macro: daily before the open (BAM refreshes FX daily, the policy rate rarely).
