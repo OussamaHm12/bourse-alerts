@@ -50,6 +50,16 @@ def main(argv: list[str] | None = None) -> None:
     issuers_parser.add_argument(
         "--symbols", nargs="*", help="limit to these symbols (default: every stock)"
     )
+    history_parser = subparsers.add_parser(
+        "backfill-history",
+        help="seed up to ~3 years of daily history from the instrument_history endpoint",
+    )
+    history_parser.add_argument(
+        "--symbols", nargs="*", help="limit to these symbols (default: every stock)"
+    )
+    history_parser.add_argument(
+        "--limit", type=int, default=None, help="cap séances fetched per symbol (default: all)"
+    )
     reports_parser = subparsers.add_parser("generate-reports")
     reports_parser.add_argument("--symbols", nargs="*")
     reports_parser.add_argument("--horizon", default="short", choices=["short", "medium", "long"])
@@ -109,6 +119,11 @@ def main(argv: list[str] | None = None) -> None:
             from moroccan_stock_intelligence.services.collectors.issuers import collect_issuers
 
             LOG.info("issuers_collected %s", collect_issuers(session, symbols=args.symbols))
+        elif command == "backfill-history":
+            from moroccan_stock_intelligence.services.collectors.history import backfill_history
+
+            tally = backfill_history(session, symbols=args.symbols, limit=args.limit)
+            LOG.info("history_backfilled %s", tally)
         elif command == "generate-reports":
             from moroccan_stock_intelligence.services.research.notifications import (
                 dispatch_thesis_notifications,
