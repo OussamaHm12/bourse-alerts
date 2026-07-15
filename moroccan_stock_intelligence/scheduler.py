@@ -157,16 +157,19 @@ def _feeds_bootstrap_job(session_factory) -> None:  # noqa: ANN001
 
 
 def _history_bootstrap_job(session_factory) -> None:  # noqa: ANN001
-    """Seed up to ~3 years of daily history once, if it was never backfilled.
+    """Seed up to ~3 years of daily history for any symbol that lacks it.
 
     Forward-only live collection needs months before ``ma200`` / ``momentum_90d`` /
     the 52-week range mean anything, which keeps the medium/long horizons and their
     confidence near the floor on a fresh deploy. This one-off pass fixes that.
 
-    Guarded on the history source label so it runs exactly once: any backfilled row
-    means "done". A ``casablanca-bourse.com`` read-timeout skips that symbol (not the
-    run); the manual ``backfill-history`` CLI re-run fills any gaps left behind.
+    Self-healing rather than run-once: it backfills only symbols with NO
+    history-source rows yet, so a reboot where everything is already seeded exits
+    instantly with zero network, while a symbol that a ``casablanca-bourse.com``
+    read-timeout skipped last time is retried on the next boot — no manual step, and
+    the ~60 symbols already done are never re-fetched.
     """
+    from moroccan_stock_intelligence.models import Stock
     from moroccan_stock_intelligence.services.collectors.history import (
         SOURCE,
         backfill_history,
@@ -174,13 +177,24 @@ def _history_bootstrap_job(session_factory) -> None:  # noqa: ANN001
 
     with session_factory() as session:
         try:
-            already = session.scalar(
-                select(func.count()).select_from(Price).where(Price.source == SOURCE)
+            done = set(
+                session.scalars(
+                    select(Stock.symbol)
+                    .join(Price, Price.stock_id == Stock.id)
+                    .where(Price.source == SOURCE)
+                    .distinct()
+                ).all()
             )
-            if already:
-                LOG.info("history_bootstrap_skipped existing_rows=%s", already)
+            missing = [
+                symbol
+                for symbol in session.scalars(select(Stock.symbol)).all()
+                if symbol not in done
+            ]
+            if not missing:
+                LOG.info("history_bootstrap_skipped all_backfilled=%s", len(done))
                 return
-            tally = backfill_history(session)
+            LOG.info("history_bootstrap_start missing=%s already=%s", len(missing), len(done))
+            tally = backfill_history(session, symbols=missing)
             LOG.info("history_bootstrap_done %s", tally)
         except Exception:  # noqa: BLE001 - a scheduled job must never crash the scheduler.
             LOG.exception("history_bootstrap_failed")
