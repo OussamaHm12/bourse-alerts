@@ -23,6 +23,7 @@ from moroccan_stock_intelligence.services.collector import (
     persist_snapshots,
 )
 from moroccan_stock_intelligence.services.digest import build_digest, build_intraday_update
+from moroccan_stock_intelligence.services.backup import render_result, run_backup
 from moroccan_stock_intelligence.services.news import collect_news
 from moroccan_stock_intelligence.services.news_backfill import (
     BATCH_SIZE as NEWS_BATCH_SIZE,
@@ -66,6 +67,16 @@ def main(argv: list[str] | None = None) -> None:
     )
     history_parser.add_argument(
         "--limit", type=int, default=None, help="cap séances fetched per symbol (default: all)"
+    )
+    backup_parser = subparsers.add_parser(
+        "backup",
+        help="snapshot the database, verify it, compress it, and ship it off-host",
+    )
+    backup_parser.add_argument(
+        "--no-ship", action="store_true", help="keep the snapshot local (skip Telegram)"
+    )
+    backup_parser.add_argument(
+        "--keep", type=int, default=None, help="how many snapshots to retain (default: BACKUP_KEEP)"
     )
     reclassify_parser = subparsers.add_parser(
         "reclassify-news",
@@ -149,6 +160,8 @@ def main(argv: list[str] | None = None) -> None:
 
             tally = backfill_history(session, symbols=args.symbols, limit=args.limit)
             LOG.info("history_backfilled %s", tally)
+        elif command == "backup":
+            run_backup_command(ship=not args.no_ship, keep=args.keep)
         elif command == "reclassify-news":
             run_reclassify_news(session, apply=args.apply, batch_size=args.batch_size)
         elif command == "generate-reports":
@@ -181,6 +194,19 @@ def run_news(session) -> None:  # noqa: ANN001
         store_news(session, item, symbol_to_id.get(item.company_symbol or ""))
     session.commit()
     LOG.info("news_stored count=%s", len(news_items))
+
+
+def run_backup_command(*, ship: bool, keep: int | None) -> None:
+    """Snapshot the database. Exits non-zero if the snapshot is not verifiable.
+
+    A failed integrity check exits 1 on purpose: this command is meant to be the
+    gate in front of any destructive operation, and a gate that always opens is
+    not a gate.
+    """
+    result = run_backup(ship=ship, keep=keep)
+    print(render_result(result))
+    if result.skipped_reason or not result.ok:
+        raise SystemExit(1)
 
 
 def run_reclassify_news(session, *, apply: bool, batch_size: int) -> None:  # noqa: ANN001

@@ -72,6 +72,24 @@ class Settings:
     # The Actualiser button forces past it.
     app_refresh_cooldown_seconds: int = int(os.getenv("APP_REFRESH_COOLDOWN_SECONDS", "900"))
 
+    # --- Backups ---
+    # The database is the one thing here that cannot be rebuilt: the history API
+    # only re-serves a ~3-year rolling window, so anything older is gone with the
+    # volume. Local copies answer logical damage; the Telegram copy answers losing
+    # the volume itself — using credentials that already exist, per the project's
+    # "no new infrastructure" constraint.
+    backup_dir: str = os.getenv("BACKUP_DIR", "data/backups")
+    backup_keep: int = int(os.getenv("BACKUP_KEEP", "7"))
+    backup_to_telegram: bool = os.getenv("BACKUP_TO_TELEGRAM", "true").lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+    # Telegram refuses bot uploads above ~50 MB; stay clearly under it.
+    backup_max_upload_mb: float = float(os.getenv("BACKUP_MAX_UPLOAD_MB", "45"))
+    # Uploading megabytes needs far more headroom than scraping a page (20 s).
+    backup_upload_timeout_seconds: float = float(os.getenv("BACKUP_UPLOAD_TIMEOUT_SECONDS", "180"))
+
     # --- Learning engine (Phase 3) ---
     # Horizon -> days after which a prediction becomes falsifiable.
     eval_days_short: int = int(os.getenv("EVAL_DAYS_SHORT", "10"))

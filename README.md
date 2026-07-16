@@ -53,7 +53,6 @@ Public Moroccan market data may be delayed, unavailable outside market hours, or
 ├── dashboard/app.py
 ├── config/watchlist.json
 ├── tests/
-├── .github/workflows/stock-alert.yml
 ├── Dockerfile
 ├── docker-compose.yml
 ├── pyproject.toml
@@ -154,14 +153,16 @@ https://api.telegram.org/bot<TOKEN>/getUpdates
 
    - Copy `chat.id`.
 
-3. Add GitHub Secrets:
+3. Set the environment variables on the deployed service (Railway):
    - `TELEGRAM_BOT_TOKEN`
    - `TELEGRAM_CHAT_ID`
 
+   Set them in **exactly one** place. The deployed service is the only sender —
+   see [Notifications: one source of truth](#notifications-one-source-of-truth).
+
 4. Test manually:
-   - Open GitHub `Actions`.
-   - Run `Moroccan Stock Intelligence`.
-   - Choose `run-once` or `daily-summary`.
+   - Open the app and use the "run now" button, or
+   - `python -m moroccan_stock_intelligence.cli daily-summary` against the same database.
 
 ## CLI
 
@@ -184,22 +185,65 @@ python -m moroccan_stock_intelligence.cli run-once
   pushes Telegram messages, so it is safe for ad-hoc local runs.
 - `send-alerts`: legacy per-event dispatch, kept for manual use.
 
-## GitHub Actions
+## Notifications: one source of truth
 
-[stock-alert.yml](.github/workflows/stock-alert.yml) runs:
+**The deployed service is the only sender.** Its in-process scheduler owns every Telegram digest,
+every push, and every alert. Nothing else may hold `TELEGRAM_BOT_TOKEN`.
 
-- `09:00 UTC` weekdays (10:00 Morocco): `morning-digest`
-- `15:00 UTC` weekdays (16:00 Morocco): `afternoon-digest` (closing digest)
-- `11:00 & 13:00 UTC` weekdays (12:00 & 14:00 Morocco): `intraday-update` (lightweight point + crash safety net)
+This used to be split. A `.github/workflows/stock-alert.yml` cron also sent digests (10:00 / 16:00
+Morocco) while the scheduler sent its own (09:00 / 17:00) — four digests a day. Worse than the
+duplication: the workflow ran against a **different database**, a throwaway SQLite file restored from
+the GitHub Actions cache. Its history depth had nothing to do with production's, so its momentum,
+scores and confidences were structurally different, and the two channels could contradict each other
+about the same stock on the same day. The workflow was removed for that reason — not for tidiness.
 
-GitHub may delay top-of-hour scheduled runs by a few minutes under load, so the actual delivery
-can land a little after the labelled time. The in-process scheduler (PWA) fires at the exact time.
-- manual `workflow_dispatch` with mode selection
+If you ever reintroduce a second scheduled runner, give it its own read-only job. Do not give it the
+bot token.
 
-Times are UTC. Morocco is UTC+1 year-round, except UTC+0 during Ramadan, so the labels can drift
-by one hour during that period (set `MOROCCO_UTC_OFFSET=0` if you want the labels to match).
+Schedule (Africa/Casablanca, weekdays unless noted) — see [scheduler.py](moroccan_stock_intelligence/scheduler.py):
 
-The workflow restores and saves `data/market.db` using GitHub Actions cache and uploads the database as an artifact.
+| Time | Job |
+| --- | --- |
+| 07:30 | `macro_collect` (Bank Al-Maghrib) |
+| 09:00 | `morning_digest` — collect + news + analyze + Telegram + push |
+| 11:00, 13:00, 15:00 | `intraday_update` — light refresh + crash safety net |
+| 17:00 | `closing_digest` |
+| 18:00 | `research_reports` — multi-analyst reports |
+| 22:00 (daily) | `database_backup` — see [Backups](#backups) |
+| 06:00 (daily) | `learning_cycle` — grade matured predictions, recalibrate |
+| Sun 03:00 / 04:30 | `issuer_collect` / `knowledge_harvest` |
+
+## Backups
+
+The database is the only thing here that cannot be rebuilt. The upstream history endpoint re-serves
+only a ~3-year rolling window, so anything older than that which is lost is lost permanently.
+
+`database_backup` runs nightly at 22:00 — after the last writing job — and:
+
+1. snapshots the file with SQLite's **online backup API** (never a file copy: the scheduler and the
+   API share the database and a `cp` of a live file can capture a torn page);
+2. verifies the copy with `PRAGMA integrity_check` — an unverified backup is not a backup;
+3. gzips it (~9x on real data);
+4. ships it to Telegram, off-host, using the credentials that already exist;
+5. rotates local copies, keeping `BACKUP_KEEP` (default 7).
+
+Local copies answer logical damage (a bad backfill, a hand-run `UPDATE`). The Telegram copy answers
+losing the volume itself. Shipping is best-effort: if it fails, the verified local snapshot still
+stands and you get a warning — but a local-only backup leaves the real risk uncovered, so do not
+ignore that warning.
+
+On demand, and **before any destructive operation**:
+
+```bash
+railway ssh
+python -m moroccan_stock_intelligence.cli backup            # snapshot + ship
+python -m moroccan_stock_intelligence.cli backup --no-ship  # snapshot only
+```
+
+Exits non-zero if the snapshot cannot be verified, so it is safe to use as a gate:
+`cli backup && cli reclassify-news --apply`.
+
+To restore: download the archive, `gunzip` it, and put it back at `data/market.db`.
 
 ## Dashboard
 
@@ -223,9 +267,10 @@ Pages:
 
 A FastAPI server exposes a JSON API and serves an installable Progressive Web App
 ([webapp/](webapp/)) with **web-push notifications** and an **in-process scheduler**
-(APScheduler, timezone `Africa/Casablanca`). One always-on process replaces GitHub Actions:
-it collects, analyzes, sends the 10:00 / 16:00 digests, the 12:00 / 14:00 intraday updates, and
-the urgent holding alerts, and pushes them to your phone — at the exact time, reliably.
+(APScheduler, timezone `Africa/Casablanca`). One always-on process does everything: it collects,
+analyzes, sends the 09:00 / 17:00 digests, the 11:00 / 13:00 / 15:00 intraday updates, and the
+urgent holding alerts, and pushes them to your phone — at the exact time, reliably. It is the only
+sender; see [Notifications: one source of truth](#notifications-one-source-of-truth).
 
 Run locally:
 
@@ -376,8 +421,8 @@ fill in each position. `config/portfolio.json` is gitignored so your buy prices 
 - `fee_rate`: round-trip selling fee used for the net profit estimate (0.005 = 0.5%). Defaults to
   `TRADING_FEE_RATE`.
 
-For GitHub Actions, do not commit the file. Instead add a repository secret `PORTFOLIO_JSON`
-containing the same JSON on a single line; the workflow reads it via the `PORTFOLIO_JSON` env var.
+Do not commit this file (it is gitignored). On the deployed service, set `PORTFOLIO_JSON` to the same
+JSON on a single line; it takes priority over the file, so your buy prices stay out of the repo.
 
 ### How the SELL / HOLD advice works
 
@@ -460,12 +505,14 @@ collection instant):
 
 ## Operations Notes
 
-- Keep `data/market.db` backed up if running outside GitHub Actions.
-- Monitor workflow logs for source parse warnings.
+- Backups are automatic (nightly 22:00, verified, shipped to Telegram). See [Backups](#backups).
+  Take a manual one with `cli backup` before any destructive operation.
+- Monitor the service logs for source parse warnings, and for `backup_job_failed` /
+  `backup_not_shipped`.
 - Prefer official Casablanca Bourse data when available.
 - Treat public delayed quotes as intelligence inputs, not execution-grade data.
 - Do not increase scraping frequency aggressively; the current 3-hour cadence is intentionally polite.
-- Keep `HTTP_VERIFY_SSL=true` in production. GitHub Actions enables `HTTP_ALLOW_INSECURE_SOURCE_RETRY=true` so a public market-data source with a broken certificate chain can be retried without disabling SSL globally.
+- Keep `HTTP_VERIFY_SSL=true` in production. Set `HTTP_ALLOW_INSECURE_SOURCE_RETRY=true` so a public market-data source with a broken certificate chain can be retried without disabling SSL globally.
 
 ## Future Roadmap
 

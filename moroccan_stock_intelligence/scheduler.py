@@ -275,6 +275,34 @@ def _bootstrap_job(session_factory) -> None:  # noqa: ANN001
             LOG.exception("bootstrap_job_failed")
 
 
+def _backup_job() -> None:
+    """Nightly database snapshot + off-host copy.
+
+    Deliberately takes no session: it snapshots the FILE via SQLite's online
+    backup API, so holding an ORM session would add contention for nothing.
+    """
+    from moroccan_stock_intelligence.services.backup import run_backup
+
+    try:
+        result = run_backup()
+        if not result.ok:
+            # Loud on purpose: a silently failing backup is worse than none,
+            # because it buys false confidence.
+            reason = result.error or result.skipped_reason or "raison inconnue"
+            LOG.error("backup_job_failed reason=%s", reason)
+            send_telegram_message(f"⚠️ Sauvegarde de la base ÉCHOUÉE — {reason}")
+        elif result.ship_error:
+            # The local snapshot stands, but the off-host copy is what protects
+            # against losing the volume — so a silent local-only backup would
+            # quietly leave the real risk uncovered.
+            LOG.warning("backup_not_shipped reason=%s", result.ship_error)
+            send_telegram_message(
+                f"⚠️ Sauvegarde locale OK mais copie hors-hôte non envoyée — {result.ship_error}"
+            )
+    except Exception:
+        LOG.exception("backup_job_crashed")
+
+
 def build_scheduler(session_factory) -> BackgroundScheduler:  # noqa: ANN001
     scheduler = BackgroundScheduler(timezone=settings.timezone)
     scheduler.add_job(
@@ -363,6 +391,16 @@ def build_scheduler(session_factory) -> BackgroundScheduler:  # noqa: ANN001
         CronTrigger(day_of_week="mon-fri", hour=18, minute=0, timezone=settings.timezone),
         args=[session_factory],
         id="research_reports",
+        misfire_grace_time=7200,
+        replace_existing=True,
+    )
+    # Backup: 22:00 daily, after every job that writes anything (the last is the
+    # 18:00 research run), so a snapshot always holds a complete day. Off-market,
+    # so it never contends with a collection.
+    scheduler.add_job(
+        _backup_job,
+        CronTrigger(hour=22, minute=0, timezone=settings.timezone),
+        id="database_backup",
         misfire_grace_time=7200,
         replace_existing=True,
     )
