@@ -1,5 +1,7 @@
 # Runtime dependencies — this is what the Docker image installs.
 # Test and lint tooling lives in requirements-dev.txt so it is never shipped.
+alembic==1.18.5      # `cli migrate` runs inside the container, and init_db stamps
+                     # the revision on boot — this is runtime, not tooling
 APScheduler==3.11.0
 beautifulsoup4==4.12.3
 fastapi==0.115.6
@@ -12,3 +14,19 @@ SQLAlchemy==2.0.36
 tenacity==9.0.0
 tzlocal==5.2
 uvicorn[standard]==0.34.0
+
+# Pinned because the code imports them DIRECTLY, even though pip installs them as
+# transitive dependencies of requests / pywebpush. Relying on someone else's
+# dependency tree for a module you `import` yourself breaks the day that tree
+# changes — and it breaks at import, on deploy.
+#   urllib3      -> scrapers/base.py, collectors/http.py, news.py (disable_warnings)
+#   cryptography -> services/push.py (VAPID key handling)
+#   py-vapid     -> services/push.py (Vapid01)
+cryptography==49.0.0
+py-vapid==1.9.4
+urllib3==2.7.0
+
+# NOT listed on purpose: `anthropic`. The LLM narrator is opt-in (LLM_PROVIDER=none
+# by default), the SDK is imported lazily inside ClaudeSynthesizer, and
+# get_synthesizer falls back to the deterministic template if it is absent. Install
+# it only if you enable the LLM:  pip install anthropic
