@@ -38,8 +38,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from moroccan_stock_intelligence.models import News, Price
-from moroccan_stock_intelligence.repository import load_price_frame
+from moroccan_stock_intelligence.repository import load_history_depths, load_price_frame
 from moroccan_stock_intelligence.services.analytics import MetricSet, compute_metrics
+from moroccan_stock_intelligence.services.horizon_strategy import NewsContext
 from moroccan_stock_intelligence.services.news_context import build_news_contexts
 from moroccan_stock_intelligence.services.scoring import ScoreResult, score_opportunity
 
@@ -126,21 +127,17 @@ def compute_state(session: Session) -> tuple[list[MetricSet], dict[str, ScoreRes
 def _compute(session: Session) -> tuple[list[MetricSet], dict[str, ScoreResult]]:
     metrics = compute_metrics(load_price_frame(session))
     news = build_news_contexts(session)
+    # History depth is not decoration: it is what lets the kernel cap confidence
+    # and shrink a score built on two days of data toward neutral, instead of
+    # asserting it as loudly as one built on three years.
+    depths = load_history_depths(session)
     scores = {
         metric.symbol: score_opportunity(
             metric,
-            # A symbol with no collected news scores 0.0 — neutral. See the module
-            # docstring: this engine cannot distinguish absent from neutral.
-            news_sentiment_score=_sentiment_of(news, metric.symbol),
+            news.get(metric.symbol, NewsContext()),
+            depths.get(metric.symbol, 0),
         )
         for metric in metrics
     }
     LOG.info("market_state_computed symbols=%s", len(metrics))
     return metrics, scores
-
-
-def _sentiment_of(news: dict, symbol: str) -> float:
-    context = news.get(symbol)
-    if context is None or context.avg_impact is None:
-        return 0.0
-    return context.avg_impact

@@ -66,14 +66,20 @@ def _add_news(session, *, sentiment: str, impact: float, event_type: str, url: s
 
 
 def test_news_reaches_the_opportunity_score(session):
-    """The regression that mattered: without news the component is a constant 50."""
+    """The regression that mattered: news used to be a constant 50, never read.
+
+    Note what "no news" now looks like: the component is ABSENT and declared in
+    `missing`, not silently set to a neutral 50. The old engine could not tell
+    silence from a neutral notice; this one refuses to pretend.
+    """
     _, before = compute_state(session)
-    assert before["ATW"].components["news_sentiment"] == 50.0
+    assert "actualites" not in before["ATW"].components
+    assert any("actualité" in m.lower() for m in before["ATW"].missing)
 
     _add_news(session, sentiment="negative", impact=-0.85, event_type="profit_warning", url="u1")
     _, after = compute_state(session)
 
-    assert after["ATW"].components["news_sentiment"] < 50.0, (
+    assert after["ATW"].components["actualites"] < 50.0, (
         "a profit warning must move the news component — this was the dead 10% weight"
     )
     assert after["ATW"].buy_score < before["ATW"].buy_score
@@ -84,7 +90,7 @@ def test_positive_news_lifts_the_score(session):
     _add_news(session, sentiment="positive", impact=0.5, event_type="share_buyback", url="u1")
     _, after = compute_state(session)
 
-    assert after["ATW"].components["news_sentiment"] > 50.0
+    assert after["ATW"].components["actualites"] > 50.0
     assert after["ATW"].buy_score > before["ATW"].buy_score
 
 
@@ -97,18 +103,24 @@ def test_strongly_negative_news_raises_the_avoid_score(session):
     assert after["ATW"].avoid_score > before["ATW"].avoid_score
 
 
-def test_mechanical_news_leaves_the_score_untouched(session):
+def test_mechanical_news_contributes_no_direction(session):
     """An ex-dividend detachment is arithmetic, not information: impact 0.0.
 
-    This is the end-to-end proof that the classifier fix and the wiring agree —
-    the old keyword model scored this +0.6 and would have lifted the score here.
+    End-to-end proof that the classifier fix and the wiring agree — the old keyword
+    model scored this +0.6 and would have LIFTED the score here.
+
+    The score still moves a hair, and that is correct rather than a leak: the
+    component goes from absent to present-at-neutral, so coverage rises and the
+    kernel shrinks the score toward neutral a little less. Having a procedural
+    notice really is more information than having none.
     """
     _, before = compute_state(session)
     _add_news(session, sentiment="neutral", impact=0.0, event_type="ex_dividend", url="u1")
     _, after = compute_state(session)
 
-    assert after["ATW"].components["news_sentiment"] == 50.0
-    assert after["ATW"].buy_score == before["ATW"].buy_score
+    assert after["ATW"].components["actualites"] == 50.0, "no direction"
+    assert after["ATW"].coverage > before["ATW"].coverage, "but more coverage"
+    assert abs(after["ATW"].buy_score - before["ATW"].buy_score) < 1.0
 
 
 def test_the_average_is_what_reaches_the_score(session):
@@ -118,12 +130,12 @@ def test_the_average_is_what_reaches_the_score(session):
     _add_news(session, sentiment="positive", impact=0.4, event_type="share_buyback", url="u2")
     _, scores = compute_state(session)
 
-    # mean(-0.8, 0.4) = -0.2 -> clamp(50 + (-0.2 * 25)) = 45
-    assert scores["ATW"].components["news_sentiment"] == 45.0
+    # mean(-0.8, 0.4) = -0.2 -> clamp(50 + (-0.2 * 35)) = 43
+    assert scores["ATW"].components["actualites"] == 43.0
 
 
-def test_a_symbol_with_no_news_is_neutral_not_penalised(session):
-    """Absent news must not read as bad news."""
+def test_a_symbol_with_no_news_is_declared_missing_not_penalised(session):
+    """Absent news must not read as bad news — nor be invented as neutral."""
     session.add(Stock(id=2, symbol="IAM", company_name="MAROC TELECOM", sector="Télécoms"))
     start = datetime.now(UTC) - timedelta(days=40)
     for day in range(40):
@@ -141,8 +153,8 @@ def test_a_symbol_with_no_news_is_neutral_not_penalised(session):
     _add_news(session, sentiment="negative", impact=-0.85, event_type="profit_warning", url="u1")
 
     _, scores = compute_state(session)
-    assert scores["IAM"].components["news_sentiment"] == 50.0
-    assert scores["ATW"].components["news_sentiment"] < 50.0
+    assert "actualites" not in scores["IAM"].components
+    assert scores["ATW"].components["actualites"] < 50.0
 
 
 def test_unlinked_news_reaches_nobody(session):
@@ -162,7 +174,7 @@ def test_unlinked_news_reaches_nobody(session):
     session.commit()
 
     _, scores = compute_state(session)
-    assert scores["ATW"].components["news_sentiment"] == 50.0
+    assert "actualites" not in scores["ATW"].components
 
 
 def test_news_outside_the_window_is_ignored(session):
@@ -172,7 +184,7 @@ def test_news_outside_the_window_is_ignored(session):
     session.commit()
 
     _, scores = compute_state(session)
-    assert scores["ATW"].components["news_sentiment"] == 50.0
+    assert "actualites" not in scores["ATW"].components
 
 
 # --------------------------------------------------------------------------- #

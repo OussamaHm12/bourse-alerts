@@ -122,7 +122,7 @@ def test_a_new_price_invalidates(session, monkeypatch):
     _, scores = market_state.compute_state(session)
 
     assert len(calls) == 2
-    assert scores["ATW"].components["momentum"] != 50.0
+    assert scores["ATW"].components["momentum_court"] != 50.0
 
 
 def test_a_history_backfill_invalidates_even_though_it_inserts_OLD_rows(session, monkeypatch):
@@ -134,7 +134,7 @@ def test_a_history_backfill_invalidates_even_though_it_inserts_OLD_rows(session,
     way to notice.
     """
     calls = _count_computations(monkeypatch)
-    _, before = market_state.compute_state(session)
+    metrics_before, _ = market_state.compute_state(session)
 
     newest_before = session.scalar(select(Price.observed_at).order_by(Price.observed_at.desc()))
     old_start = datetime.now(UTC) - timedelta(days=400)
@@ -154,9 +154,12 @@ def test_a_history_backfill_invalidates_even_though_it_inserts_OLD_rows(session,
     newest_after = session.scalar(select(Price.observed_at).order_by(Price.observed_at.desc()))
     assert newest_after == newest_before, "precondition: the backfill added no NEWER séance"
 
-    _, after = market_state.compute_state(session)
+    metrics_after, _ = market_state.compute_state(session)
     assert len(calls) == 2, "the cache must not miss three years of new history"
-    assert after["ATW"].components != before["ATW"].components
+    # Asserted on the metrics, not the short-horizon components: old séances do not
+    # move momentum 1-5d or the 90-day support, and correctly so. What they do move
+    # is the long structure — which is exactly the data the backfill exists to seed.
+    assert metrics_after[0].week52_low < metrics_before[0].week52_low
 
 
 def test_reclassifying_news_invalidates_even_though_it_only_UPDATEs(session, monkeypatch):
@@ -182,7 +185,7 @@ def test_reclassifying_news_invalidates_even_though_it_only_UPDATEs(session, mon
 
     calls = _count_computations(monkeypatch)
     _, before = market_state.compute_state(session)
-    assert before["ATW"].components["news_sentiment"] == 65.0
+    assert before["ATW"].components["actualites"] == 71.0
 
     row = session.scalars(select(News)).one()
     row.event_type = "ex_dividend"
@@ -192,7 +195,7 @@ def test_reclassifying_news_invalidates_even_though_it_only_UPDATEs(session, mon
 
     _, after = market_state.compute_state(session)
     assert len(calls) == 2, "an in-place reclassification must invalidate the cache"
-    assert after["ATW"].components["news_sentiment"] == 50.0
+    assert after["ATW"].components["actualites"] == 50.0
 
 
 def test_new_news_invalidates(session, monkeypatch):
@@ -215,7 +218,7 @@ def test_new_news_invalidates(session, monkeypatch):
     _, scores = market_state.compute_state(session)
 
     assert len(calls) == 2
-    assert scores["ATW"].components["news_sentiment"] < 50.0
+    assert scores["ATW"].components["actualites"] < 50.0
 
 
 def test_deleting_news_invalidates(session, monkeypatch):
@@ -240,7 +243,7 @@ def test_deleting_news_invalidates(session, monkeypatch):
     _, scores = market_state.compute_state(session)
 
     assert len(calls) == 2
-    assert scores["ATW"].components["news_sentiment"] == 50.0
+    assert "actualites" not in scores["ATW"].components
 
 
 # --------------------------------------------------------------------------- #
