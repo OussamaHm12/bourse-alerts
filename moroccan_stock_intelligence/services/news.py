@@ -12,20 +12,12 @@ from bs4 import BeautifulSoup, Tag
 from moroccan_stock_intelligence.config import settings
 from moroccan_stock_intelligence.schemas import NewsItem
 from moroccan_stock_intelligence.scrapers.base import HEADERS
+from moroccan_stock_intelligence.services.news_classifier import classify
 from moroccan_stock_intelligence.utils import normalize_text
 
 LOG = logging.getLogger(__name__)
 
 OFFICIAL_NEWS_URL = "https://www.casablanca-bourse.com/fr/avis"
-
-POSITIVE_TERMS = ["augmentation", "croissance", "dividende", "resultat", "benefice", "hausse"]
-NEGATIVE_TERMS = ["profit warning", "baisse", "suspension", "sanction", "perte", "alerte"]
-EVENT_TERMS = {
-    "capital_action": ["augmentation de capital", "fusion", "opa", "opv"],
-    "dividend": ["dividende"],
-    "results": ["resultat", "résultat", "chiffre d'affaires"],
-    "trading_notice": ["suspension", "reprise", "radiation"],
-}
 
 
 def collect_news(symbol_to_name: dict[str, str]) -> list[NewsItem]:
@@ -76,19 +68,17 @@ def parse_official_news(html: str, symbol_to_name: dict[str, str]) -> list[NewsI
         if url in seen:
             continue
         seen.add(url)
-        symbol = match_symbol(title, symbol_to_name)
-        event_type = classify_event(title)
-        sentiment, impact = classify_sentiment(title)
+        verdict = classify(title)
         items.append(
             NewsItem(
                 title=title,
                 url=url,
                 source="Casablanca Bourse Avis",
                 published_at=parse_date_near(link),
-                company_symbol=symbol,
-                event_type=event_type,
-                sentiment=sentiment,
-                impact_score=impact,
+                company_symbol=match_symbol(title, symbol_to_name),
+                event_type=verdict.event_type,
+                sentiment=verdict.sentiment,
+                impact_score=verdict.impact_score,
             )
         )
     return items[:100]
@@ -104,23 +94,15 @@ def match_symbol(title: str, symbol_to_name: dict[str, str]) -> str | None:
     return None
 
 
-def classify_event(title: str) -> str | None:
-    lower = title.lower()
-    for event_type, terms in EVENT_TERMS.items():
-        if any(term in lower for term in terms):
-            return event_type
-    return "announcement"
+def classify_event(title: str) -> str:
+    """Kept as the collector-facing name; the rules live in `news_classifier`."""
+    return classify(title).event_type
 
 
 def classify_sentiment(title: str) -> tuple[str, float]:
-    lower = title.lower()
-    positive = sum(1 for term in POSITIVE_TERMS if term in lower)
-    negative = sum(1 for term in NEGATIVE_TERMS if term in lower)
-    if positive > negative:
-        return "positive", min(1.0, 0.4 + positive * 0.2)
-    if negative > positive:
-        return "negative", max(-1.0, -0.4 - negative * 0.2)
-    return "neutral", 0.0
+    """Kept as the collector-facing name; the rules live in `news_classifier`."""
+    verdict = classify(title)
+    return verdict.sentiment, verdict.impact_score
 
 
 def parse_date_near(link: Tag) -> datetime | None:

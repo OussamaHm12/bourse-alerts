@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from moroccan_stock_intelligence.models import CompanyProfile, Fundamental, News, Stock
 from moroccan_stock_intelligence.repository import load_company_knowledge, upsert_knowledge_fact
+from moroccan_stock_intelligence.services.news_classifier import event_family
 
 LOG = logging.getLogger(__name__)
 
@@ -144,7 +145,7 @@ def harvest_company(session: Session, stock: Stock) -> int:
         category = {
             "capital_action": "capital_actions",
             "dividend": "dividend_history",
-        }.get(item.event_type or "", "events")
+        }.get(event_family(item.event_type), "events")
         when = item.published_at or item.collected_at
         key = f"{when.date().isoformat()} — {item.event_type or 'avis'}" if when else (item.event_type or "avis")
         learned += _remember(session, stock.id, category, key, item.title,

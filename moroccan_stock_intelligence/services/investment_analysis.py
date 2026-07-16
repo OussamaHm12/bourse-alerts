@@ -30,6 +30,7 @@ from moroccan_stock_intelligence.services.horizon_strategy import (
     compute_confidence,
     compute_risk,
 )
+from moroccan_stock_intelligence.services.news_classifier import event_family
 from moroccan_stock_intelligence.services.portfolio import (
     HoldingEvaluation,
     evaluate_portfolio,
@@ -99,8 +100,8 @@ def build_news_contexts(session: Session, days: int = 30) -> dict[str, NewsConte
                 n.sentiment == "negative" and w is not None and w >= fresh_cutoff
                 for n, w in items
             ),
-            has_dividend=any(n.event_type == "dividend" for n, _ in items),
-            has_results=any(n.event_type == "results" for n, _ in items),
+            has_dividend=any(event_family(n.event_type) == "dividend" for n, _ in items),
+            has_results=any(event_family(n.event_type) == "results" for n, _ in items),
         )
     return contexts
 

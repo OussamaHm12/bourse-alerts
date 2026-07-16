@@ -30,6 +30,7 @@ from moroccan_stock_intelligence.repository import (
 from moroccan_stock_intelligence.services.analytics import MetricSet
 from moroccan_stock_intelligence.services.collectors import DERIVED_SOURCE
 from moroccan_stock_intelligence.services.horizon_strategy import NewsContext
+from moroccan_stock_intelligence.services.news_classifier import event_family
 from moroccan_stock_intelligence.services.portfolio import (
     HoldingEvaluation,
     Portfolio,
@@ -264,8 +265,8 @@ def _build_news(session: Session) -> tuple[dict[str, list[NewsView]], dict[str, 
                 and i.collected_at >= fresh_cutoff
                 for i in items
             ),
-            has_dividend=any(i.event_type == "dividend" for i in items),
-            has_results=any(i.event_type == "results" for i in items),
+            has_dividend=any(event_family(i.event_type) == "dividend" for i in items),
+            has_results=any(event_family(i.event_type) == "results" for i in items),
         )
     return grouped, contexts
 
