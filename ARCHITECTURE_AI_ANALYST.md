@@ -1,8 +1,30 @@
 # Architecture — AI Investment Analyst (Casablanca Stock Exchange)
 
-> **Status: DESIGN — awaiting validation. No implementation until this is approved.**
-> Audience: the engineer/AI who will build it. Read `HANDOVER.md` first (current system),
-> then this (target system). This document *extends* the live platform — it does not rewrite it.
+> **Status: BUILT and running in production** (updated 2026-07-16). This header said
+> "DESIGN — awaiting validation. No implementation until this is approved" long after
+> every phase of it had shipped, which made the repo's own architecture document its
+> least reliable one.
+>
+> What exists today, verified against the code: the 10 agents
+> (`services/analysts/` — 8 analysts + Risk Manager + CIO), the structured JSON
+> contracts with no recommendation field, the orchestrator with its explicit registry
+> and fault isolation, the debate engine, the scenario engine, the Beta-Binomial
+> learning loop, the knowledge base, the thesis memory, and the optional Claude
+> synthesizer behind its anti-hallucination validator.
+>
+> **Read this as the design rationale — why the pieces are shaped the way they are.**
+> For what the system *currently is*, including what the design did not anticipate,
+> read `AUDIT_TECHNIQUE.md`. For operating it, `HANDOVER.md` and `MIGRATIONS.md`.
+>
+> Two things the design got wrong, worth knowing before trusting the rest:
+>
+> * §2.7 "Extend, don't rewrite" listed `scoring.py` among the modules that stay.
+>   It stayed, and the result was two engines disagreeing about the same stock on
+>   89% of symbols. It has since been converged onto the horizon kernel
+>   (AUDIT_TECHNIQUE.md §4).
+> * The design assumed the news feed carried tone. It does not — `/fr/avis` publishes
+>   procedural corporate-action notices, so most items carry no direction at all, and
+>   the sentiment model had to become event-driven.
 
 ---
 
