@@ -34,7 +34,8 @@ A personal Casablanca Stock Exchange (Bourse de Casablanca) intelligence platfor
    - **Telegram** (rich HTML digests) and
    - **Web Push** (PWA notifications on the phone).
 8. **Serves a Flutter Web PWA** (installable app) and a JSON API from the same process.
-9. Historically also exposed a **Streamlit dashboard** (desktop, still in the repo).
+9. A Streamlit dashboard existed until 2026-07-16; removed (never deployed, duplicated the
+   scoring pipeline, and pulled streamlit+plotly — ~180 MB — into the production image).
 
 ### Main business goals
 - Give the owner a **once-installed phone app** that shows portfolio value, per-stock SELL/HOLD
@@ -71,7 +72,7 @@ single most important architectural constraint to understand before adding users
 - Notifications inbox (persisted `notifications` table shown in-app).
 - Cache-busting via `no-cache` app-shell headers so new deploys load without a stale SW.
 - GitHub Actions cron as an **alternate** Telegram delivery path.
-- Streamlit dashboard (7 pages).
+- ~~Streamlit dashboard~~ — removed 2026-07-16; the PWA covers it.
 
 ### Features still missing / not done
 - **Authentication / multi-user / per-user portfolios** (none — see §6).
@@ -494,7 +495,7 @@ A ready Render blueprint exists: `type: web`, `runtime: docker`, `plan: starter`
 
 ### Docker (local / VPS)
 `docker-compose.yml` defines: `webapp` (the server), `collector` (one-shot `run-once`),
-`dashboard` (Streamlit on 8501), and an optional `postgres` profile. `.env` is the env source.
+and an optional `postgres` profile. `.env` is the env source.
 
 ### GitHub Actions — REMOVED (2026-07-16). The "double Telegram" risk is resolved.
 `.github/workflows/stock-alert.yml` used to cron digests (10:00 / 16:00 Morocco) alongside the
@@ -534,7 +535,6 @@ strings.
 | `HTTP_VERIFY_SSL` | Verify TLS on scrapes | `true` | scrapers, news |
 | `HTTP_ALLOW_INSECURE_SOURCE_RETRY` | Retry a source w/o SSL verify on cert error | `false` (prod), `true` in CI/Railway | scrapers, news |
 | `LOG_LEVEL` | Logging level | `INFO` | logging_config |
-| `WATCHLIST_FILE` | Watchlist path (dashboard) | `config/watchlist.json` | portfolio.load_watchlist / dashboard |
 | `MIN_OPPORTUNITY_SCORE` | BUY score to emit an `opportunity_score` alert | `80` | alerts.py |
 | `OPPORTUNITY_RECAP_SCORE` | Threshold for the digest opportunity recap | `60` | digest.py |
 | `PORTFOLIO_FILE` | Holdings file path | `config/portfolio.json` | portfolio.py |
@@ -740,8 +740,6 @@ All in `flutter_app/lib/main.dart`. Shell = `HomeShell` (AppBar-less custom head
 | `pywebpush` | Send Web Push messages. |
 | `py_vapid` (via pywebpush) + `cryptography` | VAPID key handling / key generation. |
 | `python-dotenv` | Load `.env` into env for config. |
-| `streamlit` | Desktop dashboard (`dashboard/app.py`). |
-| `plotly` | Charts in the Streamlit dashboard. |
 | `tzlocal` | Timezone resolution for APScheduler. |
 | `pytest` | Tests. |
 | `ruff`, `black`, `pre-commit` | Lint/format/hooks (dev). |
@@ -779,7 +777,8 @@ All in `flutter_app/lib/main.dart`. Shell = `HomeShell` (AppBar-less custom head
 - **Two frontends** in the repo (`webapp/` legacy vanilla PWA + `webapp_flutter/` Flutter build);
   the legacy one is a fallback but drifts from the Flutter feature set.
 - **`analyze`/`overview` recompute everything from the full price frame on each call** — no caching
-  at the API layer (Streamlit caches 120 s; FastAPI does not).
+  at the API layer (FastAPI does not cache; `compute_state` runs per request — see
+  AUDIT_TECHNIQUE.md §13).
 - **No API tests, no scheduler tests.** Only parsing/scoring/portfolio unit tests.
 
 ### Scalability concerns
@@ -913,12 +912,11 @@ Add saved-HTML fixtures whenever a scraped source changes shape.
 - **`flutter_app/web/{push.js,service-worker.js,index.html,manifest.json}`** — PWA shell + push bridge.
 - **`webapp_flutter/`** — the committed compiled Flutter Web build served in production.
 - **`webapp/`** — legacy hand-written vanilla-JS PWA (fallback; drifted from Flutter).
-- **`dashboard/app.py`** — Streamlit dashboard (7 pages) for desktop analysis.
 - **`Dockerfile`** — simple single-stage Python image; `CMD` = `cli serve --host 0.0.0.0`.
 - **`render.yaml`** — Render blueprint (alternate host).
 - **`docker-compose.yml`** — webapp/collector/dashboard/postgres services for local/VPS.
 - **`services/backup.py`** — nightly verified DB snapshot, gzipped, shipped off-host to Telegram.
-- **`config/watchlist.json`**, **`config/portfolio.example.json`** — sample configs
+- **`config/portfolio.example.json`** — sample config
   (`config/portfolio.json` is gitignored).
 - **`tests/`** — `test_parsing.py`, `test_scoring.py`, `test_portfolio.py`.
 - **`stock_alert.py`** — legacy thin wrapper that calls `cli.main()` (backward compatibility).
@@ -1026,7 +1024,6 @@ Add saved-HTML fixtures whenever a scraped source changes shape.
 - **Frontend/PWA:** app-shell files served with `Cache-Control: no-cache, must-revalidate` so
   browsers revalidate (fast 304) and always pick up new deploys; Flutter's own hashed assets cache
   normally. Our custom SW does not aggressively cache (push-only), avoiding stale-asset traps.
-- **Streamlit dashboard:** `@st.cache_data(ttl=120)` on metric/data loads.
 - **FastAPI:** **no response caching** — `overview`/`stocks`/`opportunities`/`stock` each recompute
   metrics from the full price frame per request (main optimization opportunity, §13).
 

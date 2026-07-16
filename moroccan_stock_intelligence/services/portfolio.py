@@ -44,14 +44,6 @@ class HoldingEvaluation:
     advice_reason: str
 
 
-def load_watchlist(path: Path) -> list[str]:
-    if not path.exists():
-        return []
-    data = json.loads(path.read_text(encoding="utf-8"))
-    symbols = data.get("symbols", data if isinstance(data, list) else [])
-    return [str(symbol).upper() for symbol in symbols]
-
-
 def load_portfolio(path: Path | None = None) -> Portfolio:
     """Load holdings from PORTFOLIO_JSON env (private secret) or a JSON file."""
     if settings.portfolio_json:

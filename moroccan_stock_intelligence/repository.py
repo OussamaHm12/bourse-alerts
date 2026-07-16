@@ -20,7 +20,6 @@ from moroccan_stock_intelligence.models import (
     Notification,
     PredictionHistory,
     Price,
-    Signal,
     Stock,
     ThesisChange,
 )
@@ -75,28 +74,6 @@ def store_snapshot(session: Session, snapshot: StockSnapshot) -> None:
         raw_payload=json.dumps(snapshot.raw, ensure_ascii=False),
     )
     session.add(price)
-
-
-def store_signal(
-    session: Session,
-    stock_id: int,
-    signal_type: str,
-    explanation: str,
-    score: float | None = None,
-    severity: str = "info",
-    metrics: dict | None = None,
-) -> Signal:
-    signal = Signal(
-        stock_id=stock_id,
-        generated_at=datetime.now(UTC),
-        signal_type=signal_type,
-        score=score,
-        severity=severity,
-        explanation=explanation,
-        metrics_json=json.dumps(metrics or {}, ensure_ascii=False),
-    )
-    session.add(signal)
-    return signal
 
 
 def create_alert_once(

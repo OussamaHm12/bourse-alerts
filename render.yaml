@@ -1,4 +1,11 @@
-# Render Blueprint — one web service that runs the API + PWA + in-process scheduler.
+# Render Blueprint — an ALTERNATE host. Production runs on Railway (HANDOVER.md §1);
+# this blueprint is the escape hatch if that ever changes. It is not deployed today.
+#
+# Deploy exactly ONE of the two. Whichever runs is the single source of truth for
+# notifications: two hosts holding TELEGRAM_BOT_TOKEN would each send digests from
+# their own volume, i.e. from different histories, and contradict each other about
+# the same stock — the exact failure that killed the old GitHub Actions path.
+#
 # Deploy: push this repo, then on render.com → New → Blueprint → pick this repo.
 # Fill the secret env vars (marked sync:false) in the dashboard after the first deploy.
 #

@@ -23,14 +23,18 @@ restent la trace de ce qui a été trouvé. Ce tableau suit ce qui a été corri
 | Aucune sauvegarde de la base | §10, §13 | **Corrigé** (2026-07-16) — job `database_backup` quotidien 22:00 : snapshot par l'API de backup en ligne SQLite, `PRAGMA integrity_check` sur la copie, gzip (~9×), envoi hors-hôte Telegram, rotation 7 jours. Commande `cli backup` en garde-fou avant toute opération destructive. 25 tests. |
 | Double chemin Telegram sur deux bases | §10, §13 | **Corrigé** (2026-07-16) — `.github/workflows/stock-alert.yml` supprimé. Le service déployé est le seul émetteur. Test de non-régression : aucun workflow ne peut porter `TELEGRAM_BOT_TOKEN`. |
 | Scheduler non testé | §12 | **Partiellement corrigé** (2026-07-16) — `tests/test_scheduler_jobs.py` couvre l'enregistrement des jobs et le comportement du backup. La logique des autres jobs reste non testée. |
-| Backfill news non appliqué | §5 | Ouvert — Priorité 2. |
-| Poids news mort dans le moteur A | §4, §5 | Ouvert — Priorité 2. |
-| Deux moteurs de scoring divergents | §4 | Ouvert — Priorité 4 (étude comparative demandée avant décision). |
+| Backfill news non appliqué | §5 | **Corrigé** (2026-07-16) — appliqué localement, conforme au dry-run, idempotence vérifiée. **Reste à appliquer en production** (`railway ssh`). |
+| Poids news mort dans le moteur A | §4, §5 | **Corrigé** (2026-07-16) — `news_sentiment_score` branché dans `compute_state`. Coût mesuré : 0.3 ms (0.08 % de `compute_state`). Impact réel : 1 titre sur 80 bouge (−0.44), aucune étiquette ne change. |
+| `NewsContext` dupliqué | §5, §11 | **Corrigé** (2026-07-16) — un seul builder dans `services/news_context.py`. |
+| Inversion de dépendance (`views.compute_state`) | §2, §11 | **Corrigé** (2026-07-16) — `compute_state` déplacé dans `services/market_state.py`. Test de non-régression : aucune couche de calcul n'importe `views`. |
+| `signals` écrite jamais lue | §7, §11 | **Corrigé** (2026-07-16) — `generate_alerts`, `store_signal`, `build_event_message` et le modèle `Signal` supprimés. **La table `signals` subsiste en base** (`create_all` ne supprime jamais) : à retirer par la première migration Alembic. |
+| Dashboard Streamlit non déployé | §11 | **Corrigé** (2026-07-16) — supprimé, avec `config/watchlist.json`, `load_watchlist` et `WATCHLIST_FILE`. Retire ~180 Mo (streamlit + plotly) de l'image de production. |
+| Deux moteurs de scoring divergents | §4 | Ouvert — étude comparative A/B avant décision. |
 | Aucune authentification | §13 | Ouvert. |
-| Aucune migration Alembic | §7, §10 | Ouvert — Priorité 5. |
+| Aucune migration Alembic | §7, §10 | Ouvert. Devra aussi supprimer la table orpheline `signals`. |
 | Aucun test sur la couche API | §12 | Ouvert. |
-| `signals` écrite jamais lue | §7 | Ouvert. |
-| Documentation obsolète | §11 | Partiellement corrigé — les sections README/HANDOVER sur les notifications et les sauvegardes sont à jour ; le reste (Streamlit, statut `ARCHITECTURE_AI_ANALYST.md`) reste ouvert. |
+| `compute_metrics` = 98.6 % du coût de `compute_state` | §13 | **Nouveau** (mesuré 2026-07-16) — 367 ms pour 400 lignes de prix, sur 6 endpoints à chaque requête. À investiguer au chantier perfs. |
+| Documentation obsolète | §11 | **Corrigé** (2026-07-16) — README (arborescence, Streamlit, horaires, notifications, sauvegardes) et HANDOVER alignés sur le code réel. Reste le statut de `ARCHITECTURE_AI_ANALYST.md`. |
 
 ### Sommaire
 

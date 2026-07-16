@@ -1,6 +1,6 @@
 # Moroccan Stock Intelligence Platform
 
-Production-oriented Python platform for collecting Casablanca Stock Exchange market snapshots, storing history, computing opportunity signals, sending Telegram alerts, and exploring the market in Streamlit.
+Production-oriented Python platform for collecting Casablanca Stock Exchange market snapshots, storing history, computing opportunity signals and multi-analyst investment reports, sending Telegram digests and web-push alerts, and serving an installable PWA.
 
 This project is for market intelligence and notifications only. It does not place trades, route orders, or provide investment advice.
 
@@ -19,45 +19,51 @@ This project is for market intelligence and notifications only. It does not plac
   portfolio P/L, opportunities scoring >= 60, and the day's movers.
 - Sends an immediate urgent alert only when a stock you actually own crashes -5% or more intraday.
 - Tracks your real holdings (quantity + buy price) and tells you the net gain if you sell now.
-- Provides a Streamlit dashboard.
+- Serves an installable PWA with web push (see [Mobile App](#mobile-app-pwa)).
 
-Detected technical events (price crash, volume spike, breakout, support test, high opportunity
-score) are still recorded in the database and surfaced inside the two daily digests, instead of
-firing a separate notification each time.
+Per-symbol notification is **thesis-based**, not event-based: you are told when the *conclusion*
+about a stock changes, not every time a price moves. A stock can move 4% in silence because the
+thesis survived; a flat stock can push because new evidence broke the case.
 
 Public Moroccan market data may be delayed, unavailable outside market hours, or inconsistent across providers. Casablanca Bourse states on its website that indices are real-time and prices are delayed by 15 minutes.
 
 ## Architecture
 
+One container: FastAPI serves the JSON API and the compiled PWA, and runs the scheduler in-process.
+The scheduler collects, analyzes, reports and notifies; the API serves **stored** reports rather than
+recomputing per request.
+
 ```text
 .
 ├── moroccan_stock_intelligence/
-│   ├── cli.py
-│   ├── config.py
-│   ├── db.py
-│   ├── models.py
-│   ├── repository.py
-│   ├── schemas.py
-│   ├── scrapers/
-│   │   ├── casablanca.py
-│   │   ├── bmce.py
-│   │   └── cdg.py
+│   ├── api.py                     # 25 JSON routes + static PWA mount
+│   ├── cli.py                     # container entrypoint; every job is a subcommand
+│   ├── scheduler.py               # APScheduler: collect / report / learn / back up
+│   ├── config.py  db.py  models.py  repository.py  schemas.py
+│   ├── scrapers/                  # casablanca (primary), bmce + cdg (fallbacks)
 │   └── services/
-│       ├── alerts.py
-│       ├── analytics.py
-│       ├── collector.py
-│       ├── news.py
-│       ├── portfolio.py
-│       ├── scoring.py
-│       └── telegram.py
-├── dashboard/app.py
-├── config/watchlist.json
+│       ├── collector.py           # scraper cascade
+│       ├── collectors/            # macro (BKAM), issuers, 3-year history backfill
+│       ├── analytics.py           # MetricSet: momentum, MAs, volatility, 52w…
+│       ├── market_state.py        # metrics + opportunity scores (the one builder)
+│       ├── scoring.py             # buy / watch / avoid
+│       ├── horizon_strategy.py    # short / medium / long + risk + confidence
+│       ├── news.py                # collect the official notices
+│       ├── news_classifier.py     # event-driven classification of those notices
+│       ├── news_context.py        # the one recent-news aggregate both engines read
+│       ├── news_backfill.py       # re-derive stored notices (idempotent)
+│       ├── analysts/              # 8 analysts + risk_manager + cio
+│       ├── research/              # orchestrator, debate, scenarios, learning,
+│       │                          #   knowledge, thesis store, notifications
+│       ├── synthesis/             # deterministic template + optional Claude
+│       ├── portfolio.py  favorites.py
+│       ├── backup.py              # nightly verified snapshot, shipped off-host
+│       ├── digest.py  alerts.py  push.py  telegram.py  refresh.py  views.py
+│       └── investment_analysis.py # explainable composition for /api/analysis/*
+├── webapp_flutter/                # the compiled PWA that ships (source: flutter_app/)
 ├── tests/
-├── Dockerfile
-├── docker-compose.yml
-├── pyproject.toml
-├── requirements.txt
-└── stock_alert.py
+├── Dockerfile  docker-compose.yml  requirements.txt  pyproject.toml
+└── stock_alert.py                 # backward-compatible wrapper around the CLI
 ```
 
 `stock_alert.py` remains as a backward-compatible wrapper around the new CLI.
@@ -130,7 +136,6 @@ HTTP_RETRIES=3
 HTTP_VERIFY_SSL=true
 HTTP_ALLOW_INSECURE_SOURCE_RETRY=false
 LOG_LEVEL=INFO
-WATCHLIST_FILE=config/watchlist.json
 MIN_OPPORTUNITY_SCORE=80
 ```
 
@@ -183,7 +188,8 @@ python -m moroccan_stock_intelligence.cli run-once
   you own crashed `URGENT_CRASH_PCT` or more today (deduplicated to once per symbol per day).
 - `run-once`: collects prices, stores them, collects news, and computes signals. It no longer
   pushes Telegram messages, so it is safe for ad-hoc local runs.
-- `send-alerts`: legacy per-event dispatch, kept for manual use.
+- `send-alerts`: manual retry for alerts whose Telegram send failed (they stay `sent=0`). Nothing
+  schedules it; live alerts send immediately and mark themselves sent.
 
 ## Notifications: one source of truth
 
@@ -244,24 +250,6 @@ Exits non-zero if the snapshot cannot be verified, so it is safe to use as a gat
 `cli backup && cli reclassify-news --apply`.
 
 To restore: download the archive, `gunzip` it, and put it back at `data/market.db`.
-
-## Dashboard
-
-Run locally:
-
-```bash
-streamlit run dashboard/app.py
-```
-
-Pages:
-
-- Market Overview
-- Stock Explorer
-- Top Opportunities
-- Signals
-- Historical Charts
-- News Feed
-- Portfolio Watchlist
 
 ## Mobile App (PWA)
 
@@ -351,12 +339,6 @@ Collector:
 docker compose run --rm collector
 ```
 
-Dashboard:
-
-```bash
-docker compose up dashboard
-```
-
 Then open:
 
 ```text
@@ -398,8 +380,8 @@ richer message.
 | `/api/favorites/{symbol}` | POST | Star (idempotent) |
 | `/api/favorites/{symbol}` | DELETE | Un-star (no-op if absent) |
 
-> [config/watchlist.json](config/watchlist.json) is legacy: it now only filters the
-> Streamlit dashboard's watchlist page and drives none of the alerts or digests.
+> Favorites replaced the old `config/watchlist.json`, which was removed along with the Streamlit
+> dashboard — it was that page's only consumer and drove none of the alerts or digests.
 
 ## Portfolio Holdings (stocks you actually own)
 

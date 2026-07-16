@@ -60,19 +60,6 @@ class Price(Base):
     stock: Mapped[Stock] = relationship(back_populates="prices")
 
 
-class Signal(Base):
-    __tablename__ = "signals"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    stock_id: Mapped[int] = mapped_column(ForeignKey("stocks.id"), index=True)
-    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    signal_type: Mapped[str] = mapped_column(String(64), index=True)
-    score: Mapped[float | None] = mapped_column(Float, nullable=True)
-    severity: Mapped[str] = mapped_column(String(32), default="info")
-    explanation: Mapped[str] = mapped_column(Text)
-    metrics_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-
 class Alert(Base):
     __tablename__ = "alerts"
     __table_args__ = (UniqueConstraint("stock_id", "event_key", name="uq_alert_event"),)

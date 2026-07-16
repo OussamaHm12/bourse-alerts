@@ -14,7 +14,6 @@ from moroccan_stock_intelligence.repository import store_news
 from moroccan_stock_intelligence.services.alerts import (
     build_daily_summary,
     dispatch_unsent_alerts,
-    generate_alerts,
 )
 from moroccan_stock_intelligence.services.alerts import dispatch_urgent_holding_alerts
 from moroccan_stock_intelligence.services.collector import (
@@ -224,11 +223,8 @@ def run_reclassify_news(session, *, apply: bool, batch_size: int) -> None:  # no
 
 
 def run_analysis(session) -> dict[str, object]:  # noqa: ANN001
-    # Third copy of the same three lines until now — and the one that silently
-    # dropped news, so the digests scored differently from the reports.
     metrics, scores = compute_state(session)
-    alerts = generate_alerts(session, metrics, scores)
-    LOG.info("analysis_complete metrics=%s alerts_created=%s", len(metrics), len(alerts))
+    LOG.info("analysis_complete metrics=%s", len(metrics))
     return {"metrics": metrics, "scores": scores}
 
 
