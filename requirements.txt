@@ -1,15 +1,13 @@
+# Runtime dependencies — this is what the Docker image installs.
+# Test and lint tooling lives in requirements-dev.txt so it is never shipped.
 APScheduler==3.11.0
 beautifulsoup4==4.12.3
-black==24.10.0
 fastapi==0.115.6
 pandas==2.2.3
-pywebpush==2.0.0
-pre-commit==4.0.1
 psycopg[binary]==3.2.3
-pytest==8.3.4
 python-dotenv==1.0.1
+pywebpush==2.0.0
 requests==2.32.3
-ruff==0.8.4
 SQLAlchemy==2.0.36
 tenacity==9.0.0
 tzlocal==5.2

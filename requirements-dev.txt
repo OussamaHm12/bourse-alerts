@@ -1,0 +1,13 @@
+# Test and lint tooling. NOT installed by the Docker image — see requirements.txt.
+#
+# Split out because the Dockerfile installs requirements.txt wholesale, so every
+# tool listed there shipped to production: pre-commit and black have no business
+# in a running container, and adding httpx/pytest-cov would have compounded it.
+-r requirements.txt
+
+black==24.10.0
+httpx==0.28.1        # fastapi.testclient needs it
+pre-commit==4.0.1
+pytest==8.3.4
+pytest-cov==7.1.0
+ruff==0.8.4

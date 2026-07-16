@@ -32,7 +32,10 @@ restent la trace de ce qui a été trouvé. Ce tableau suit ce qui a été corri
 | Deux moteurs de scoring divergents | §4 | Ouvert — étude comparative A/B avant décision. |
 | Aucune authentification | §13 | Ouvert. |
 | Aucune migration Alembic | §7, §10 | Ouvert. Devra aussi supprimer la table orpheline `signals`. |
-| Aucun test sur la couche API | §12 | Ouvert. |
+| Aucun test sur la couche API | §12 | **Corrigé** (2026-07-16) — 46 tests. `api.py` 0 % → **88 %**. L'API était *intestable*, pas seulement non testée : elle ouvre un engine et lance `init_db()` à l'import. `tests/conftest.py` redirige `DATABASE_URL` avant le premier import de `config`. |
+| `research/notifications` non testé | §12 | **Corrigé** (2026-07-16) — 16 tests. 0 % → **93 %**. |
+| Tests sortant sur le réseau | — | **Nouveau, corrigé** (2026-07-16) — un test `/api/refresh` scrapait réellement casablanca-bourse.com (81 lignes) à chaque exécution. Garde-fou `no_outbound_network` dans `conftest.py` : tout appel `requests` échoue bruyamment. |
+| Couverture de tests | §12 | **Mesurée** — 68 % à l'audit → **76 %** au 16 juillet. Restent à 0 % : `synthesis/claude.py` (LLM désactivé), `collectors/company.py`, `collectors/issuers.py`. |
 | `compute_metrics` = 98.6 % du coût de `compute_state` | §13 | **Nouveau** (mesuré 2026-07-16) — 367 ms pour 400 lignes de prix, sur 6 endpoints à chaque requête. À investiguer au chantier perfs. |
 | Documentation obsolète | §11 | **Corrigé** (2026-07-16) — README (arborescence, Streamlit, horaires, notifications, sauvegardes) et HANDOVER alignés sur le code réel. Reste le statut de `ARCHITECTURE_AI_ANALYST.md`. |
 
@@ -706,10 +709,11 @@ passer les prix d'achat en secret plutôt qu'en fichier.
 | Modules chargés pendant la suite | 55/60 |
 | Fixtures HTML | 2 (émetteur ATW, BKAM) |
 
-> **Limite de mesure — à ne pas surinterpréter.**
-> `pytest-cov` n'est pas installé et `pip` est bloqué sur ce poste : **aucune couverture de lignes réelle n'a
-> pu être mesurée**. Les chiffres ci-dessus sont des proxys honnêtes (modules chargés, fonctions de test), pas
-> une couverture. Ne pas les présenter comme telle.
+> **Correction du 16 juillet 2026.** Ce paragraphe affirmait initialement qu'aucune couverture de lignes
+> n'était mesurable, `pytest-cov` étant absent et `pip` supposé bloqué. **C'était faux** : `pip` fonctionne.
+> `pytest-cov` a été installé et la couverture réelle mesurée — **68 %** à l'état audité, **76 %** après les
+> chantiers du 16 juillet. Les chiffres du tableau ci-dessus restent des proxys ; la couverture réelle par
+> module est désormais donnée plus bas.
 
 ### Répartition
 
