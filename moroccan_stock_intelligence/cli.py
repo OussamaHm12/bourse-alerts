@@ -24,6 +24,13 @@ from moroccan_stock_intelligence.services.collector import (
 )
 from moroccan_stock_intelligence.services.digest import build_digest, build_intraday_update
 from moroccan_stock_intelligence.services.news import collect_news
+from moroccan_stock_intelligence.services.news_backfill import (
+    BATCH_SIZE as NEWS_BATCH_SIZE,
+)
+from moroccan_stock_intelligence.services.news_backfill import (
+    reclassify_news,
+    render_report,
+)
 from moroccan_stock_intelligence.services.portfolio import evaluate_portfolio, load_portfolio
 from moroccan_stock_intelligence.services.scoring import score_opportunity
 from moroccan_stock_intelligence.services.telegram import send_telegram_message
@@ -59,6 +66,24 @@ def main(argv: list[str] | None = None) -> None:
     )
     history_parser.add_argument(
         "--limit", type=int, default=None, help="cap séances fetched per symbol (default: all)"
+    )
+    reclassify_parser = subparsers.add_parser(
+        "reclassify-news",
+        help="re-derive event_type/sentiment/impact on stored notices (dry-run by default)",
+    )
+    # Mutually exclusive so the intent is unambiguous: writing is never a default,
+    # and `--dry-run --apply` is rejected rather than silently resolved.
+    reclassify_mode = reclassify_parser.add_mutually_exclusive_group()
+    reclassify_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report what would change without writing (default)",
+    )
+    reclassify_mode.add_argument(
+        "--apply", action="store_true", help="write the new classification to the database"
+    )
+    reclassify_parser.add_argument(
+        "--batch-size", type=int, default=NEWS_BATCH_SIZE, help="rows per committed batch"
     )
     reports_parser = subparsers.add_parser("generate-reports")
     reports_parser.add_argument("--symbols", nargs="*")
@@ -124,6 +149,8 @@ def main(argv: list[str] | None = None) -> None:
 
             tally = backfill_history(session, symbols=args.symbols, limit=args.limit)
             LOG.info("history_backfilled %s", tally)
+        elif command == "reclassify-news":
+            run_reclassify_news(session, apply=args.apply, batch_size=args.batch_size)
         elif command == "generate-reports":
             from moroccan_stock_intelligence.services.research.notifications import (
                 dispatch_thesis_notifications,
@@ -154,6 +181,21 @@ def run_news(session) -> None:  # noqa: ANN001
         store_news(session, item, symbol_to_id.get(item.company_symbol or ""))
     session.commit()
     LOG.info("news_stored count=%s", len(news_items))
+
+
+def run_reclassify_news(session, *, apply: bool, batch_size: int) -> None:  # noqa: ANN001
+    """Re-derive the stored notices' classification. Exits non-zero on failure.
+
+    The report goes to stdout rather than the log: it is the deliverable of a dry
+    run, not a trace of it.
+    """
+    try:
+        report = reclassify_news(session, apply=apply, batch_size=batch_size)
+    except Exception as exc:
+        # reclassify_news has already rolled back and logged the traceback; all this
+        # layer owes the caller is a non-zero exit.
+        raise SystemExit(1) from exc
+    print(render_report(report))
 
 
 def run_analysis(session) -> dict[str, object]:  # noqa: ANN001
