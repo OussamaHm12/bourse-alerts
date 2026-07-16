@@ -66,6 +66,24 @@ def main(argv: list[str] | None = None) -> None:
     history_parser.add_argument(
         "--limit", type=int, default=None, help="cap séances fetched per symbol (default: all)"
     )
+    migrate_parser = subparsers.add_parser(
+        "migrate", help="apply pending Alembic migrations (take a backup first)"
+    )
+    migrate_parser.add_argument(
+        "--to", default="head", help="target revision (default: head; e.g. -1 to roll back one)"
+    )
+    migrate_parser.add_argument(
+        "--sql", action="store_true", help="print the SQL instead of running it"
+    )
+    subparsers.add_parser("migrate-status", help="show the current and pending revisions")
+    copy_parser = subparsers.add_parser(
+        "copy-database",
+        help="copy every table to another backend (SQLite -> PostgreSQL). Read-only on the source.",
+    )
+    copy_parser.add_argument("--to", required=True, help="target URL, e.g. postgresql+psycopg://...")
+    copy_parser.add_argument(
+        "--from", dest="source", default=None, help="source URL (default: DATABASE_URL)"
+    )
     backup_parser = subparsers.add_parser(
         "backup",
         help="snapshot the database, verify it, compress it, and ship it off-host",
@@ -160,6 +178,12 @@ def main(argv: list[str] | None = None) -> None:
             LOG.info("history_backfilled %s", tally)
         elif command == "backup":
             run_backup_command(ship=not args.no_ship, keep=args.keep)
+        elif command == "migrate":
+            run_migrate(target=args.to, sql_only=args.sql)
+        elif command == "migrate-status":
+            run_migrate_status()
+        elif command == "copy-database":
+            run_copy_database(source=args.source, target=args.to)
         elif command == "reclassify-news":
             run_reclassify_news(session, apply=args.apply, batch_size=args.batch_size)
         elif command == "generate-reports":
@@ -192,6 +216,66 @@ def run_news(session) -> None:  # noqa: ANN001
         store_news(session, item, symbol_to_id.get(item.company_symbol or ""))
     session.commit()
     LOG.info("news_stored count=%s", len(news_items))
+
+
+def _alembic_config():
+    from pathlib import Path
+
+    from alembic.config import Config
+
+    root = Path(__file__).resolve().parent.parent
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "migrations"))
+    return config
+
+
+def run_migrate(*, target: str, sql_only: bool) -> None:
+    """Apply migrations. Explicit on purpose — never on boot.
+
+    Auto-migrating at startup would mean a bad migration takes the app down on
+    deploy, with no opportunity to take a backup first. `cli backup && cli migrate`
+    is the intended sequence, and `backup` exits non-zero when the snapshot cannot
+    be verified, so it works as a gate.
+    """
+    from alembic import command
+
+    LOG.info("migrate_start target=%s database=%s", target, settings.database_url.split("@")[-1])
+    try:
+        if target.startswith("-"):
+            command.downgrade(_alembic_config(), target, sql=sql_only)
+        else:
+            command.upgrade(_alembic_config(), target, sql=sql_only)
+    except Exception as exc:
+        LOG.exception("migrate_failed target=%s", target)
+        raise SystemExit(1) from exc
+    LOG.info("migrate_done target=%s", target)
+
+
+def run_migrate_status() -> None:
+    from alembic import command
+
+    config = _alembic_config()
+    print("\n  Révision appliquée :")
+    command.current(config, verbose=True)
+    print("\n  Révisions disponibles (la plus récente en premier) :")
+    command.history(config, verbose=False)
+
+
+def run_copy_database(*, source: str | None, target: str) -> None:
+    """Copy the database to another backend. Read-only on the source.
+
+    Exits non-zero on any count mismatch: a migration that reports success without
+    verifying is how data goes missing quietly.
+    """
+    from moroccan_stock_intelligence.services.db_migrate import (
+        migrate_database,
+        render_migration,
+    )
+
+    result = migrate_database(source or settings.database_url, target)
+    print(render_migration(result))
+    if not result.ok:
+        raise SystemExit(1)
 
 
 def run_backup_command(*, ship: bool, keep: int | None) -> None:
