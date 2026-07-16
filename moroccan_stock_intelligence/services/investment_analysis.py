@@ -11,15 +11,12 @@ financial advice, and every payload carries the disclaimer.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
 from moroccan_stock_intelligence.config import settings
-from moroccan_stock_intelligence.repository import (
-    load_history_depths,
-    load_recent_news,
-)
+from moroccan_stock_intelligence.repository import load_history_depths
 from moroccan_stock_intelligence.services.analytics import MetricSet
 from moroccan_stock_intelligence.services.horizon_strategy import (
     HORIZON_LABELS_FR,
@@ -30,14 +27,14 @@ from moroccan_stock_intelligence.services.horizon_strategy import (
     compute_confidence,
     compute_risk,
 )
-from moroccan_stock_intelligence.services.news_classifier import event_family
+from moroccan_stock_intelligence.services.news_context import build_news_contexts
 from moroccan_stock_intelligence.services.portfolio import (
     HoldingEvaluation,
     evaluate_portfolio,
     load_portfolio,
 )
+from moroccan_stock_intelligence.services.market_state import compute_state
 from moroccan_stock_intelligence.services.scoring import ScoreResult
-from moroccan_stock_intelligence.services.views import compute_state
 
 LOG = logging.getLogger(__name__)
 
@@ -69,41 +66,10 @@ AI_HOLDING_RISK = 70
 # News context                                                                  #
 # --------------------------------------------------------------------------- #
 
-def build_news_contexts(session: Session, days: int = 30) -> dict[str, NewsContext]:
-    """Aggregate the recent linked news per symbol (small table: filter in Python)."""
-    now = datetime.now(UTC)
-    cutoff = now - timedelta(days=days)
-    fresh_cutoff = now - timedelta(hours=24)
-    grouped: dict[str, list] = {}
-    for news, symbol in load_recent_news(session, limit=300):
-        if symbol is None:
-            continue
-        when = news.collected_at
-        if when is not None and when.tzinfo is None:
-            when = when.replace(tzinfo=UTC)
-        if when is not None and when < cutoff:
-            continue
-        grouped.setdefault(symbol, []).append((news, when))
-
-    contexts: dict[str, NewsContext] = {}
-    for symbol, items in grouped.items():
-        impacts = [n.impact_score for n, _ in items if n.impact_score is not None]
-        latest, latest_when = items[0]
-        contexts[symbol] = NewsContext(
-            count=len(items),
-            avg_impact=(sum(impacts) / len(impacts)) if impacts else None,
-            positive=sum(1 for n, _ in items if n.sentiment == "positive"),
-            negative=sum(1 for n, _ in items if n.sentiment == "negative"),
-            latest_title=latest.title,
-            latest_at=latest_when,
-            fresh_negative=any(
-                n.sentiment == "negative" and w is not None and w >= fresh_cutoff
-                for n, w in items
-            ),
-            has_dividend=any(event_family(n.event_type) == "dividend" for n, _ in items),
-            has_results=any(event_family(n.event_type) == "results" for n, _ in items),
-        )
-    return contexts
+# `build_news_contexts` used to be duplicated here. It now lives in
+# `services/news_context` — the two copies had already drifted on the window
+# constants, which would have made this engine and the research engine disagree
+# about what "recent news" means. Imported above; nothing else changed.
 
 
 # --------------------------------------------------------------------------- #

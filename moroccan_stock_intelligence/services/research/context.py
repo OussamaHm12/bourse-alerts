@@ -24,24 +24,21 @@ from moroccan_stock_intelligence.repository import (
     load_fundamentals,
     load_history_depths,
     load_latest_macro,
-    load_recent_news,
     load_symbol_history,
 )
 from moroccan_stock_intelligence.services.analytics import MetricSet
 from moroccan_stock_intelligence.services.collectors import DERIVED_SOURCE
 from moroccan_stock_intelligence.services.horizon_strategy import NewsContext
-from moroccan_stock_intelligence.services.news_classifier import event_family
+from moroccan_stock_intelligence.services.news_context import NewsView, build_news_views
 from moroccan_stock_intelligence.services.portfolio import (
     HoldingEvaluation,
     Portfolio,
     evaluate_portfolio,
     load_portfolio,
 )
+from moroccan_stock_intelligence.services.market_state import compute_state
 from moroccan_stock_intelligence.services.scoring import ScoreResult
-from moroccan_stock_intelligence.services.views import compute_state
 
-NEWS_WINDOW_DAYS = 30
-FRESH_HOURS = 24
 HISTORY_POINTS = 365
 
 
@@ -49,16 +46,10 @@ HISTORY_POINTS = 365
 # Lightweight, detached views of the raw rows (kept serialisable, no ORM)      #
 # --------------------------------------------------------------------------- #
 
-@dataclass(frozen=True)
-class NewsView:
-    title: str
-    url: str
-    source: str
-    published_at: datetime | None
-    collected_at: datetime | None
-    event_type: str | None
-    sentiment: str | None
-    impact_score: float | None
+# NewsView now lives with the builder that produces it (`services/news_context`)
+# and is imported above, so `from ...research.context import NewsView` still
+# resolves — the analysts read it through this module and have no reason to care
+# that the aggregation moved.
 
 
 # --------------------------------------------------------------------------- #
@@ -225,50 +216,8 @@ def _aware(value: datetime | None) -> datetime | None:
 
 
 def _build_news(session: Session) -> tuple[dict[str, list[NewsView]], dict[str, NewsContext]]:
-    """Aggregate recent linked news per symbol (small table: filter in Python)."""
-    now = datetime.now(UTC)
-    cutoff = now - timedelta(days=NEWS_WINDOW_DAYS)
-    fresh_cutoff = now - timedelta(hours=FRESH_HOURS)
-    grouped: dict[str, list[NewsView]] = {}
-    for news, symbol in load_recent_news(session, limit=300):
-        if symbol is None:
-            continue
-        when = _aware(news.collected_at)
-        if when is not None and when < cutoff:
-            continue
-        grouped.setdefault(symbol, []).append(
-            NewsView(
-                title=news.title,
-                url=news.url,
-                source=news.source,
-                published_at=_aware(news.published_at),
-                collected_at=when,
-                event_type=news.event_type,
-                sentiment=news.sentiment,
-                impact_score=news.impact_score,
-            )
-        )
-
-    contexts: dict[str, NewsContext] = {}
-    for symbol, items in grouped.items():
-        impacts = [i.impact_score for i in items if i.impact_score is not None]
-        latest = items[0]  # load_recent_news returns newest first
-        contexts[symbol] = NewsContext(
-            count=len(items),
-            avg_impact=(sum(impacts) / len(impacts)) if impacts else None,
-            positive=sum(1 for i in items if i.sentiment == "positive"),
-            negative=sum(1 for i in items if i.sentiment == "negative"),
-            latest_title=latest.title,
-            latest_at=latest.collected_at,
-            fresh_negative=any(
-                i.sentiment == "negative" and i.collected_at is not None
-                and i.collected_at >= fresh_cutoff
-                for i in items
-            ),
-            has_dividend=any(event_family(i.event_type) == "dividend" for i in items),
-            has_results=any(event_family(i.event_type) == "results" for i in items),
-        )
-    return grouped, contexts
+    """Delegates to the single canonical builder — see `services/news_context`."""
+    return build_news_views(session)
 
 
 # --------------------------------------------------------------------------- #

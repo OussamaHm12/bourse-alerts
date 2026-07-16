@@ -8,30 +8,26 @@ from moroccan_stock_intelligence.config import settings
 from moroccan_stock_intelligence.models import News
 from moroccan_stock_intelligence.repository import (
     load_favorite_symbols,
-    load_price_frame,
     load_recent_news,
     load_recent_notifications,
     load_symbol_history,
 )
-from moroccan_stock_intelligence.services.analytics import MetricSet, compute_metrics
+from moroccan_stock_intelligence.services.analytics import MetricSet
 from moroccan_stock_intelligence.services.favorites import evaluate_favorites, sort_by_score
+from moroccan_stock_intelligence.services.market_state import compute_state
 from moroccan_stock_intelligence.services.portfolio import (
     HoldingEvaluation,
     Portfolio,
     evaluate_portfolio,
     load_portfolio,
 )
-from moroccan_stock_intelligence.services.scoring import (
-    ScoreResult,
-    classify_label,
-    score_opportunity,
-)
+from moroccan_stock_intelligence.services.scoring import ScoreResult, classify_label
 
 
-def compute_state(session: Session) -> tuple[list[MetricSet], dict[str, ScoreResult]]:
-    metrics = compute_metrics(load_price_frame(session))
-    scores = {metric.symbol: score_opportunity(metric) for metric in metrics}
-    return metrics, scores
+# `compute_state` moved to `services/market_state`: calculation layers were
+# importing it from here, i.e. depending on a view module to obtain market state.
+# Re-exported (imported above) so existing `from ...views import compute_state`
+# callers keep resolving.
 
 
 def _holding_dict(evaluation: HoldingEvaluation) -> dict:

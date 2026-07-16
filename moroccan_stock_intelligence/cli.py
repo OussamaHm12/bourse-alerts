@@ -10,20 +10,20 @@ from moroccan_stock_intelligence.config import settings
 from moroccan_stock_intelligence.db import get_engine, get_session_factory, init_db
 from moroccan_stock_intelligence.logging_config import configure_logging
 from moroccan_stock_intelligence.models import Stock
-from moroccan_stock_intelligence.repository import load_price_frame, store_news
+from moroccan_stock_intelligence.repository import store_news
 from moroccan_stock_intelligence.services.alerts import (
     build_daily_summary,
     dispatch_unsent_alerts,
     generate_alerts,
 )
 from moroccan_stock_intelligence.services.alerts import dispatch_urgent_holding_alerts
-from moroccan_stock_intelligence.services.analytics import compute_metrics
 from moroccan_stock_intelligence.services.collector import (
     collect_market_snapshots,
     persist_snapshots,
 )
-from moroccan_stock_intelligence.services.digest import build_digest, build_intraday_update
 from moroccan_stock_intelligence.services.backup import render_result, run_backup
+from moroccan_stock_intelligence.services.digest import build_digest, build_intraday_update
+from moroccan_stock_intelligence.services.market_state import compute_state
 from moroccan_stock_intelligence.services.news import collect_news
 from moroccan_stock_intelligence.services.news_backfill import (
     BATCH_SIZE as NEWS_BATCH_SIZE,
@@ -33,7 +33,6 @@ from moroccan_stock_intelligence.services.news_backfill import (
     render_report,
 )
 from moroccan_stock_intelligence.services.portfolio import evaluate_portfolio, load_portfolio
-from moroccan_stock_intelligence.services.scoring import score_opportunity
 from moroccan_stock_intelligence.services.telegram import send_telegram_message
 
 LOG = logging.getLogger(__name__)
@@ -225,9 +224,9 @@ def run_reclassify_news(session, *, apply: bool, batch_size: int) -> None:  # no
 
 
 def run_analysis(session) -> dict[str, object]:  # noqa: ANN001
-    frame = load_price_frame(session)
-    metrics = compute_metrics(frame)
-    scores = {metric.symbol: score_opportunity(metric) for metric in metrics}
+    # Third copy of the same three lines until now — and the one that silently
+    # dropped news, so the digests scored differently from the reports.
+    metrics, scores = compute_state(session)
     alerts = generate_alerts(session, metrics, scores)
     LOG.info("analysis_complete metrics=%s alerts_created=%s", len(metrics), len(alerts))
     return {"metrics": metrics, "scores": scores}
