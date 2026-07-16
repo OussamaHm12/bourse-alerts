@@ -38,6 +38,22 @@ os.environ["PORTFOLIO_JSON"] = '{"fee_rate": 0.005, "holdings": []}'
 
 
 @pytest.fixture(autouse=True)
+def clear_market_state_cache():
+    """`compute_state` caches on a fingerprint of its inputs, in a module global.
+
+    In production there is one database, so the fingerprint identifies the data.
+    Across tests there are many: two in-memory databases with the same row counts
+    fingerprint identically, and the second test would silently read the first
+    one's scores. Cleared around every test so a pass never depends on ordering.
+    """
+    from moroccan_stock_intelligence.services import market_state
+
+    market_state.invalidate()
+    yield
+    market_state.invalidate()
+
+
+@pytest.fixture(autouse=True)
 def no_outbound_network(monkeypatch, request):
     """Fail loudly if a test reaches the internet.
 
