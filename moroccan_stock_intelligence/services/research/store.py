@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -44,26 +45,109 @@ from moroccan_stock_intelligence.services.research.learning import evaluation_da
 
 LOG = logging.getLogger(__name__)
 
-# A recommendation is bullish, bearish, or neither. Used to turn a verdict into a
-# falsifiable directional claim.
-BULLISH = {"STRONG_OPPORTUNITY", "WATCH", "HOLD"}
-BEARISH = {"AVOID", "RISKY", "TAKE_PROFIT"}
+# --------------------------------------------------------------------------- #
+# Prediction semantics v2                                                       #
+# --------------------------------------------------------------------------- #
+#
+# v1 said: BULLISH = {STRONG_OPPORTUNITY, WATCH, HOLD} -> "up".
+#
+# WATCH means "no direction dominates; wait for confirmation" and is by far the
+# most common verdict — it covers the whole 45-70 score band. Recording it as a
+# bullish bet meant the engine mass-produced "up" calls nobody had made, and any
+# hit rate computed from them would have measured how often the Casablanca market
+# rises, not whether this platform is right (AUDIT_2026-07-18.md §9).
+#
+# v2 maps each verdict to what it actually asserts. "flat" is a real, falsifiable
+# claim here — the evaluator's flat band is |return| < FLAT_RETURN_PCT — so
+# WATCH and HOLD are scored, not excluded. What IS excluded from directional
+# scoring is the pair that genuinely asserts something else:
+#
+#   RISKY       — a statement about volatility and drawdown, not direction. A
+#                 risky stock that rises has not falsified it.
+#   TAKE_PROFIT — an instruction about an existing position, conditional on a
+#                 gain already realised. It is not a forecast at all.
+#
+# Both are still recorded, under their own claim_kind, so the rows exist when
+# there is a way to grade them (realised volatility is already stored). Silently
+# scoring them as "down" would have been the easy choice and the wrong one.
+from moroccan_stock_intelligence.models import CURRENT_SEMANTICS_VERSION as SEMANTICS_VERSION
 
-# How much of a verdict's confidence to treat as its stated probability. A verdict
-# is a direction call, not a probability, so we map confidence -> probability in a
-# bounded way: 50% confidence means a coin flip, 100% means 0.9 (never certainty).
-def _probability(confidence: float | None) -> float:
-    if confidence is None:
-        return 0.5
-    return round(min(0.9, max(0.1, 0.5 + (confidence - 50) / 125)), 4)
+CLAIM_DIRECTION = "direction"
+CLAIM_STABILITY = "stability"
+CLAIM_ACTION = "action"
 
 
-def _direction_of(recommendation: str) -> str:
-    if recommendation in BULLISH:
-        return "up"
-    if recommendation in BEARISH:
-        return "down"
-    return "flat"
+@dataclass(frozen=True)
+class Claim:
+    direction: str | None
+    kind: str
+
+
+_VERDICT_CLAIMS: dict[str, Claim] = {
+    "STRONG_OPPORTUNITY": Claim("up", CLAIM_DIRECTION),
+    "WATCH": Claim("flat", CLAIM_DIRECTION),
+    "HOLD": Claim("flat", CLAIM_DIRECTION),
+    "AVOID": Claim("down", CLAIM_DIRECTION),
+    "RISKY": Claim(None, CLAIM_STABILITY),
+    "TAKE_PROFIT": Claim(None, CLAIM_ACTION),
+}
+
+# The most a score alone may claim. 0.75 for a maximal score, because a
+# single-market technical model with no validated edge asserting more than that
+# would be a statement about the model's ego rather than the data.
+MAX_EDGE = 0.25
+
+
+# Derived from the table above rather than maintained separately: these are what
+# `_explain_change` uses to decide which side of the case became the driver when a
+# thesis flipped. Two hand-kept sets would be two things to forget to update.
+BULLISH = frozenset(
+    name for name, claim in _VERDICT_CLAIMS.items() if claim.direction == "up"
+)
+BEARISH = frozenset(
+    name
+    for name, claim in _VERDICT_CLAIMS.items()
+    if claim.direction == "down" or claim.kind in (CLAIM_STABILITY, CLAIM_ACTION)
+)
+
+
+def _claim_for(recommendation: str) -> Claim:
+    return _VERDICT_CLAIMS.get(recommendation, Claim("flat", CLAIM_DIRECTION))
+
+
+def _signal_strength(score: float | None) -> float:
+    """How far from "no opinion" the score itself sits, 0..1."""
+    if score is None:
+        return 0.0
+    return min(1.0, abs(score - 50.0) / 50.0)
+
+
+def _probability(signal_strength: float, data_confidence: float | None) -> float:
+    """Probability that the stated direction happens.
+
+    v1 computed this straight from `confidence`, which measures DATA COVERAGE —
+    50% of it is the share of indicators available, 30% history depth, 20% signal
+    agreement. It says nothing about whether the direction will occur. A stock with
+    three complete years of history scored 0.82 regardless of how weak its setup
+    was, and the Brier score built on that measured the calibration of a coverage
+    metric reinterpreted as a probability: arithmetically correct, semantically
+    meaningless.
+
+    v2 separates the two:
+
+        edge        = signal_strength x MAX_EDGE      (what the score claims)
+        probability = 0.5 + edge x (data_confidence)  (discounted by what we know)
+
+    Thin data therefore pulls the probability toward a coin flip instead of
+    inflating it, which is the correct direction for both terms.
+
+    This is deliberately UNCALIBRATED. It is a prior, and the honest source for a
+    real probability is the empirical hit rate per score band, which is what the
+    backtest produces. Until then, no claim of calibration is made anywhere.
+    """
+    coverage = 0.5 if data_confidence is None else max(0.0, min(1.0, data_confidence / 100.0))
+    probability = 0.5 + (signal_strength * MAX_EDGE * coverage)
+    return round(min(0.9, max(0.1, probability)), 4)
 
 
 def _lean_direction(lean: float) -> str:
@@ -142,6 +226,8 @@ def _record_predictions(
         verdict = report.cio.verdicts.get(horizon)
         if verdict is None:
             continue
+        claim = _claim_for(verdict.recommendation)
+        strength = _signal_strength(verdict.score)
         save_prediction(
             session,
             report_id=row.id,
@@ -153,18 +239,24 @@ def _record_predictions(
             generated_at=generated,
             evaluate_at=evaluation_date(generated, horizon),
             engine_version=report.engine_version,
-            predicted_direction=_direction_of(verdict.recommendation),
-            predicted_probability=_probability(verdict.confidence),
+            predicted_direction=claim.direction,
+            predicted_probability=_probability(strength, verdict.confidence),
             stated_confidence=verdict.confidence,
             price_at_prediction=price,
+            semantics_version=SEMANTICS_VERSION,
+            claim_kind=claim.kind,
+            signal_strength=round(strength, 4),
+            data_confidence=verdict.confidence,
         )
 
         # Each analyst's own directional lean — this is what makes per-analyst
-        # accuracy measurable rather than only the CIO's.
+        # accuracy measurable rather than only the CIO's. A lean IS a direction by
+        # construction, so these are always directional claims.
         for name, analyst_report in report.analysts.items():
             lean = analyst_report.lean_for(horizon)
             if lean is None or analyst_report.confidence < 20:
                 continue  # an analyst with no data made no claim
+            lean_strength = _signal_strength(lean)
             save_prediction(
                 session,
                 report_id=row.id,
@@ -177,9 +269,13 @@ def _record_predictions(
                 evaluate_at=evaluation_date(generated, horizon),
                 engine_version=report.engine_version,
                 predicted_direction=_lean_direction(lean),
-                predicted_probability=_probability(analyst_report.confidence),
+                predicted_probability=_probability(lean_strength, analyst_report.confidence),
                 stated_confidence=analyst_report.confidence,
                 price_at_prediction=price,
+                semantics_version=SEMANTICS_VERSION,
+                claim_kind=CLAIM_DIRECTION,
+                signal_strength=round(lean_strength, 4),
+                data_confidence=analyst_report.confidence,
             )
 
 

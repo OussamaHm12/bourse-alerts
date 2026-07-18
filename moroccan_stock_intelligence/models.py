@@ -19,6 +19,19 @@ class Base(DeclarativeBase):
     pass
 
 
+# How the platform's own predictions are to be read. Lives here rather than in
+# `services/research/store` because `repository` also needs it and cannot import
+# the store (the store imports the repository).
+#
+#   v1 — WATCH and HOLD recorded as "up"; `predicted_probability` derived from the
+#        data-coverage confidence. Both wrong, both fixed in v2. Rows are kept:
+#        they are a faithful record of what the engine claimed at the time.
+#   v2 — each verdict maps to what it actually asserts, non-directional verdicts
+#        are labelled as such, and the probability comes from signal strength
+#        discounted by data confidence.
+CURRENT_SEMANTICS_VERSION = 2
+
+
 class Stock(Base):
     __tablename__ = "stocks"
 
@@ -267,6 +280,25 @@ class PredictionHistory(Base):
     predicted_probability: Mapped[float] = mapped_column(Float)
     stated_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     price_at_prediction: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # --- Prediction semantics (v2) ------------------------------------------ #
+    # v1 recorded WATCH and HOLD as bullish bets and derived `predicted_probability`
+    # from a data-coverage metric (AUDIT_2026-07-18.md §9). Both are fixed, but the
+    # rows already written cannot be reinterpreted after the fact — the claim they
+    # encode is not the claim v2 would have made.
+    #
+    # So the version is stored per row and the learning engine scores only one
+    # semantics at a time. v1 rows are kept (they are real observations of what the
+    # engine said) and simply not mixed with v2 rows.
+    semantics_version: Mapped[int] = mapped_column(Integer, default=1, index=True)
+    # "direction" claims are the only ones scored for directional accuracy.
+    # "stability" (RISKY) and "action" (TAKE_PROFIT) are recorded but assert
+    # something other than a price direction, and counting them as directional
+    # calls would measure the market rather than the analyst.
+    claim_kind: Mapped[str] = mapped_column(String(16), default="direction", index=True)
+    # What the score itself implied, kept separate from the data-coverage number.
+    signal_strength: Mapped[float | None] = mapped_column(Float, nullable=True)
+    data_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     price_at_evaluation: Mapped[float | None] = mapped_column(Float, nullable=True)

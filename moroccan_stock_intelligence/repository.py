@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from moroccan_stock_intelligence.models import (
+    CURRENT_SEMANTICS_VERSION,
     Alert,
     AnalysisReport,
     AnalystPerformance,
@@ -516,6 +517,10 @@ def save_prediction(
     predicted_probability: float,
     stated_confidence: float | None,
     price_at_prediction: float | None,
+    semantics_version: int = 1,
+    claim_kind: str = "direction",
+    signal_strength: float | None = None,
+    data_confidence: float | None = None,
 ) -> PredictionHistory | None:
     """Record one falsifiable claim. None if this exact claim already exists."""
     existing = session.scalar(
@@ -542,6 +547,10 @@ def save_prediction(
         predicted_probability=predicted_probability,
         stated_confidence=stated_confidence,
         price_at_prediction=price_at_prediction,
+        semantics_version=semantics_version,
+        claim_kind=claim_kind,
+        signal_strength=signal_strength,
+        data_confidence=data_confidence,
     )
     session.add(row)
     return row
@@ -565,7 +574,18 @@ def load_due_predictions(session: Session, now: datetime | None = None) -> list[
 def load_evaluated_predictions(
     session: Session, analyst: str | None = None, horizon: str | None = None
 ) -> list[PredictionHistory]:
-    query = select(PredictionHistory).where(PredictionHistory.evaluated_at.is_not(None))
+    query = select(PredictionHistory).where(
+        PredictionHistory.evaluated_at.is_not(None),
+        # v1 recorded WATCH/HOLD as bullish bets and derived probabilities from a
+        # coverage metric. Those rows are real observations of what the engine
+        # said, so they are kept — but mixing two semantics in one statistic would
+        # produce a number that means neither.
+        PredictionHistory.semantics_version == CURRENT_SEMANTICS_VERSION,
+        # RISKY asserts volatility and TAKE_PROFIT is an instruction, not a
+        # forecast; neither is falsified by a price going the "wrong" way.
+        PredictionHistory.claim_kind == "direction",
+        PredictionHistory.predicted_direction.is_not(None),
+    )
     if analyst:
         query = query.where(PredictionHistory.analyst == analyst)
     if horizon:
