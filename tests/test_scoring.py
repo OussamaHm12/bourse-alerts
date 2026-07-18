@@ -148,12 +148,34 @@ def test_the_label_thresholds_are_the_cios_own():
     assert scoring.STRONG_CONFIDENCE == 50.0
     assert scoring.WATCH_SCORE == 55.0
     assert scoring.WEAK_SCORE == 45.0
-    # The CIO reads the same numbers in `_recommend`; if either side moves, the two
-    # screens start contradicting each other again.
-    source = __import__("inspect").getsource(cio._recommend)
-    assert "score >= 70 and confidence >= 50" in source
-    assert "score >= 55" in source
-    assert "score < 45" in source
+    # Previously this test read the CIO's source and checked the same literals
+    # appeared there — the best you can do when a rule is duplicated. The rule is
+    # not duplicated any more, so the property can be asserted directly: both sides
+    # are views onto the ONE policy object, and cannot hold different numbers.
+    from moroccan_stock_intelligence.services import recommendation_policy
+
+    assert scoring.STRONG_SCORE is recommendation_policy.THRESHOLDS.strong_score
+    assert scoring.STRONG_CONFIDENCE is recommendation_policy.THRESHOLDS.strong_confidence
+    assert scoring.WATCH_SCORE is recommendation_policy.THRESHOLDS.watch_score
+    assert scoring.WEAK_SCORE is recommendation_policy.THRESHOLDS.weak_score
+    assert scoring.AVOID_RISK is recommendation_policy.THRESHOLDS.avoid_risk
+    assert scoring.RISKY_RISK is recommendation_policy.THRESHOLDS.risky_risk
+
+
+def test_the_cio_and_the_tab_call_the_same_policy():
+    """The structural guarantee that replaced the source-inspection check above.
+
+    If someone reintroduces a local `_recommend` in either module, this fails.
+    """
+    import inspect
+
+    from moroccan_stock_intelligence.services import recommendation_policy, scoring
+    from moroccan_stock_intelligence.services.analysts import cio
+
+    assert not hasattr(cio, "_recommend"), "the CIO must not hold its own copy of the rule"
+    assert "decide_recommendation" in inspect.getsource(cio._decide)
+    assert "decide(" in inspect.getsource(scoring.classify_label)
+    assert recommendation_policy.POLICY_VERSION
 
 
 def test_score_opportunity_and_the_kernel_agree_by_construction():

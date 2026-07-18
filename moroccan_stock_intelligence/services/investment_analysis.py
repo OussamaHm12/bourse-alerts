@@ -34,6 +34,13 @@ from moroccan_stock_intelligence.services.portfolio import (
     load_portfolio,
 )
 from moroccan_stock_intelligence.services.market_state import compute_state
+from moroccan_stock_intelligence.services.recommendation_policy import (
+    PERSPECTIVE_LABELS_FR,
+    RECOMMENDATION_LABELS_FR,
+    Decision,
+    decide,
+    position_from_holding,
+)
 from moroccan_stock_intelligence.services.scoring import ScoreResult
 
 LOG = logging.getLogger(__name__)
@@ -42,15 +49,6 @@ DISCLAIMER = (
     "Information seulement — ceci n'est pas un conseil en investissement. "
     "Cours différés ~15 min."
 )
-
-RECOMMENDATION_LABELS_FR = {
-    "STRONG_OPPORTUNITY": "Forte opportunité",
-    "WATCH": "À surveiller",
-    "HOLD": "Conserver",
-    "TAKE_PROFIT": "Prendre des bénéfices",
-    "AVOID": "Éviter",
-    "RISKY": "Risqué",
-}
 
 # Intelligent-notification rules (push + in-app inbox only; Telegram stays the
 # digests' channel so nothing doubles). All deduplicated once/symbol/day via
@@ -84,33 +82,25 @@ def _pct(value: float | None) -> str:
     return "n/a" if value is None else f"{value:+.1f}%"
 
 
-def _recommend(
+def _decide(
     horizon_score: float,
     confidence: float,
     risk: float,
     avoid_score: float | None,
     holding: HoldingEvaluation | None,
-) -> str:
-    held = holding is not None and holding.current_price is not None
-    if held:
-        if holding.advice == "SELL":
-            if holding.net_pl_pct is not None and holding.net_pl_pct >= settings.take_profit_pct:
-                return "TAKE_PROFIT"
-            return "RISKY"
-        if risk >= AI_HOLDING_RISK:
-            return "RISKY"
-        return "HOLD"
-    if risk >= 65 and horizon_score < 70:
-        return "RISKY"
-    if avoid_score is not None and avoid_score >= 60:
-        return "AVOID"
-    if horizon_score >= 70 and confidence >= 50:
-        return "STRONG_OPPORTUNITY"
-    if horizon_score >= 55:
-        return "WATCH"
-    if horizon_score < 45:
-        return "AVOID"
-    return "WATCH"
+) -> Decision:
+    """Delegate to the single policy — see services/recommendation_policy.
+
+    This function used to hold its own copy of the rule, with its own constants.
+    It agreed with the CIO's copy by coincidence; now it agrees by construction.
+    """
+    return decide(
+        score=horizon_score,
+        risk=risk,
+        confidence=confidence,
+        avoid_score=avoid_score,
+        position=position_from_holding(holding, settings.take_profit_pct),
+    )
 
 
 def _data_used(metric: MetricSet, news: NewsContext, history_days: int, held: bool) -> list[str]:
@@ -325,9 +315,10 @@ def compose_analysis(
     risk, risk_reasons = compute_risk(metric, news, history_days)
     confidence, confidence_reason = compute_confidence(chosen, history_days)
     held = holding is not None and holding.current_price is not None
-    recommendation = _recommend(
+    decision = _decide(
         chosen.score, confidence, risk, score.avoid_score if score else None, holding
     )
+    recommendation = decision.recommendation
 
     horizon_label = HORIZON_LABELS_FR[horizon]
     decision_reason = (
@@ -381,7 +372,16 @@ def compose_analysis(
         "horizon": horizon,
         "horizon_label": horizon_label,
         "recommendation": recommendation,
-        "recommendation_label": RECOMMENDATION_LABELS_FR[recommendation],
+        "recommendation_label": decision.label,
+        # The audit's user-visible contradiction: the Opportunités tab said
+        # ACHETER while this screen said Conserver, for the same stock. Both were
+        # right — they answer different questions — but nothing on screen said so.
+        # Exposing the perspective lets the UI explain the difference instead of
+        # looking inconsistent.
+        "perspective": decision.perspective,
+        "perspective_label": PERSPECTIVE_LABELS_FR[decision.perspective],
+        "policy_version": decision.policy_version,
+        "triggered_rules": decision.triggered_rules,
         "confidence": confidence,
         "risk_score": risk,
         "scores": {h: assessments[h].score for h in HORIZONS},

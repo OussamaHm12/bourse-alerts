@@ -27,48 +27,46 @@ from moroccan_stock_intelligence.services.research.contracts import (
     RiskReport,
     Statement,
 )
+from moroccan_stock_intelligence.services.recommendation_policy import (
+    RECOMMENDATION_LABELS_FR,
+    Decision,
+    position_from_holding,
+)
+# Aliased: this module's own public entry point is also called `decide`, and the
+# later `def decide(...)` would otherwise silently shadow the import — which it
+# did, and the failure was a TypeError deep inside the CIO rather than at import.
+from moroccan_stock_intelligence.services.recommendation_policy import (
+    decide as decide_recommendation,
+)
 from moroccan_stock_intelligence.services.research.debate import build_debate, debate_summary
 
-VERSION = "1.0"
+VERSION = "1.1"
 
-RECOMMENDATION_LABELS_FR = {
-    "STRONG_OPPORTUNITY": "Forte opportunité",
-    "WATCH": "À surveiller",
-    "HOLD": "Conserver",
-    "TAKE_PROFIT": "Prendre des bénéfices",
-    "AVOID": "Éviter",
-    "RISKY": "Risqué",
-}
+# RECOMMENDATION_LABELS_FR is re-exported from recommendation_policy: several
+# modules import it from here, and one dictionary is one dictionary.
 
-HOLDING_RISK = 70.0
 BULL_LEAN = 58.0
 BEAR_LEAN = 42.0
 # Analysts whose leans participate in the contradiction check (directional views).
 DIRECTIONAL = ("technical", "market_structure", "news", "historical_behaviour", "fundamental")
 
 
-def _recommend(score: float, confidence: float, risk: float, avoid_score: float | None, ctx: ResearchContext) -> str:
-    holding = ctx.holding
-    held = holding is not None and holding.current_price is not None
-    if held:
-        if holding.advice == "SELL":
-            if holding.net_pl_pct is not None and holding.net_pl_pct >= settings.take_profit_pct:
-                return "TAKE_PROFIT"
-            return "RISKY"
-        if risk >= HOLDING_RISK:
-            return "RISKY"
-        return "HOLD"
-    if risk >= 65 and score < 70:
-        return "RISKY"
-    if avoid_score is not None and avoid_score >= 60:
-        return "AVOID"
-    if score >= 70 and confidence >= 50:
-        return "STRONG_OPPORTUNITY"
-    if score >= 55:
-        return "WATCH"
-    if score < 45:
-        return "AVOID"
-    return "WATCH"
+def _decide(
+    score: float, confidence: float, risk: float, avoid_score: float | None, ctx: ResearchContext
+) -> Decision:
+    """Delegate to the single policy — see services/recommendation_policy.
+
+    The thresholds and the branching used to live here, duplicated in
+    `investment_analysis` and `scoring`. They now live in one module, so the report
+    and the Opportunités tab cannot drift apart.
+    """
+    return decide_recommendation(
+        score=score,
+        risk=risk,
+        confidence=confidence,
+        avoid_score=avoid_score,
+        position=position_from_holding(ctx.holding, settings.take_profit_pct),
+    )
 
 
 def _contradictions(reports: dict[str, AnalystReport]) -> list[str]:
@@ -156,15 +154,18 @@ def decide(
     for horizon in HORIZONS:
         a = assessments[horizon]
         confidence, conf_reason = compute_confidence(a, ctx.history_days)
-        rec = _recommend(a.score, confidence, risk.overall_risk, avoid_score, ctx)
+        decision = _decide(a.score, confidence, risk.overall_risk, avoid_score, ctx)
+        rec = decision.recommendation
         rationale = (
             f"Score {a.score:.0f}/100, risque {risk.overall_risk:.0f}/100, "
-            f"confiance {confidence:.0f}/100. {conf_reason} {debate_summary(debate, horizon)}"
+            f"confiance {confidence:.0f}/100. {decision.rationale} "
+            f"[{', '.join(decision.triggered_rules)}] "
+            f"{conf_reason} {debate_summary(debate, horizon)}"
         )
         verdicts[horizon] = HorizonVerdict(
             horizon=horizon,
             recommendation=rec,
-            recommendation_label=RECOMMENDATION_LABELS_FR[rec],
+            recommendation_label=decision.label,
             score=a.score,
             confidence=confidence,
             rationale=rationale,
