@@ -157,6 +157,20 @@ class RiskReport:
     missing_data: list[str] = field(default_factory=list)
     version: str = "1.0"
 
+    # --- Added when the dimensions stopped being decorative (audit §7) --------
+    # `dimensions` used to be computed, serialised, drawn as a radar in the app —
+    # and then ignored: overall_risk was `base_risk + flag_bonus`, with the
+    # dimensions never entering it. The valuation dimension in particular was the
+    # only place a rich PER would have been penalised, and it did not count.
+    #
+    # These three fields make the displayed breakdown and the number that drives
+    # the recommendation the SAME arithmetic, and let the API explain it.
+    weights: dict[str, float] = field(default_factory=dict)
+    contributions: dict[str, float] = field(default_factory=dict)  # weight x value
+    coverage: float = 1.0  # share of the weight whose dimension was measurable
+    flag_penalty: float = 0.0
+    unknown_penalty: float = 0.0
+
 
 @dataclass(frozen=True)
 class HorizonVerdict:

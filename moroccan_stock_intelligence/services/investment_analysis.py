@@ -308,9 +308,10 @@ def compose_analysis(
     news: NewsContext,
     history_days: int,
     horizon: str,
+    fundamentals=None,  # noqa: ANN001 - research.context.Fundamentals; optional so existing callers keep working
 ) -> dict:
     """Build the full explainable analysis payload for one stock and one horizon."""
-    assessments = assess_all(metric, news, history_days)
+    assessments = assess_all(metric, news, history_days, fundamentals)
     chosen = assessments[horizon]
     risk, risk_reasons = compute_risk(metric, news, history_days)
     confidence, confidence_reason = compute_confidence(chosen, history_days)
@@ -416,6 +417,15 @@ def compose_analysis(
 # --------------------------------------------------------------------------- #
 
 def _gather(session: Session):
+    """Everything the screens need, loaded once.
+
+    Fundamentals are loaded here too, via the research context's own loader, so
+    this engine and the research engine read the same rows through the same rules
+    (official values beating derived ones, latest fiscal year winning). Duplicating
+    that selection would be a second place for it to drift.
+    """
+    from moroccan_stock_intelligence.services.research.context import _load_fundamentals
+
     metrics, scores = compute_state(session)
     portfolio = load_portfolio()
     metrics_by_symbol = {metric.symbol: metric for metric in metrics}
@@ -425,11 +435,12 @@ def _gather(session: Session):
     }
     depths = load_history_depths(session)
     news_contexts = build_news_contexts(session)
-    return metrics, scores, holdings, depths, news_contexts, portfolio
+    fundamentals = _load_fundamentals(session)
+    return metrics, scores, holdings, depths, news_contexts, portfolio, fundamentals
 
 
 def analyze_symbol(session: Session, symbol: str, horizon: str) -> dict | None:
-    metrics, scores, holdings, depths, news_contexts, _ = _gather(session)
+    metrics, scores, holdings, depths, news_contexts, _, fundamentals = _gather(session)
     metric = next((m for m in metrics if m.symbol.upper() == symbol.upper()), None)
     if metric is None:
         return None
@@ -440,6 +451,7 @@ def analyze_symbol(session: Session, symbol: str, horizon: str) -> dict | None:
         news_contexts.get(metric.symbol, NewsContext()),
         depths.get(metric.symbol, 0),
         horizon,
+        fundamentals.get(metric.symbol),
     )
     payload["as_of"] = datetime.now(UTC).isoformat()
     return payload
@@ -465,7 +477,7 @@ def _compact(analysis: dict) -> dict:
 def analysis_opportunities(
     session: Session, horizon: str, min_score: float = 50.0, limit: int = 15
 ) -> dict:
-    metrics, scores, holdings, depths, news_contexts, _ = _gather(session)
+    metrics, scores, holdings, depths, news_contexts, _, fundamentals = _gather(session)
     items: list[dict] = []
     for metric in metrics:
         analysis = compose_analysis(
@@ -475,6 +487,7 @@ def analysis_opportunities(
             news_contexts.get(metric.symbol, NewsContext()),
             depths.get(metric.symbol, 0),
             horizon,
+            fundamentals.get(metric.symbol),
         )
         if analysis["scores"][horizon] >= min_score:
             items.append(_compact(analysis))
@@ -491,7 +504,7 @@ def analysis_opportunities(
 
 
 def analysis_portfolio(session: Session) -> dict:
-    metrics, scores, holdings, depths, news_contexts, portfolio = _gather(session)
+    metrics, scores, holdings, depths, news_contexts, portfolio, fundamentals = _gather(session)
     metrics_by_symbol = {metric.symbol: metric for metric in metrics}
     rows: list[dict] = []
     attention: list[str] = []
@@ -518,6 +531,7 @@ def analysis_portfolio(session: Session) -> dict:
             news_contexts.get(symbol, NewsContext()),
             depths.get(symbol, 0),
             "medium",
+            fundamentals.get(symbol),
         )
         rows.append(_compact(analysis) | {
             "suggested_action": analysis["suggested_action"],
@@ -557,7 +571,7 @@ def analysis_portfolio(session: Session) -> dict:
 
 
 def analysis_market_summary(session: Session) -> dict:
-    metrics, _scores, _holdings, depths, news_contexts, _ = _gather(session)
+    metrics, _scores, _holdings, depths, news_contexts, _, fundamentals = _gather(session)
 
     with_ma = [m for m in metrics if m.price is not None and m.ma50 is not None]
     above = sum(1 for m in with_ma if m.price > m.ma50)
@@ -581,7 +595,9 @@ def analysis_market_summary(session: Session) -> dict:
     for metric in metrics:
         context = news_contexts.get(metric.symbol, NewsContext())
         history = depths.get(metric.symbol, 0)
-        for horizon, assessment in assess_all(metric, context, history).items():
+        for horizon, assessment in assess_all(
+            metric, context, history, fundamentals.get(metric.symbol)
+        ).items():
             confidence, _ = compute_confidence(assessment, history)
             top[horizon].append(
                 {

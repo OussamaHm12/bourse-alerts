@@ -1,3 +1,5 @@
+import pytest
+
 from moroccan_stock_intelligence.services.analytics import MetricSet
 from moroccan_stock_intelligence.services.portfolio import Holding, evaluate_holding
 from moroccan_stock_intelligence.services.scoring import score_opportunity
@@ -37,7 +39,13 @@ def _metric(symbol="ATW", price=415.0, momentum_30d=4.0, daily_variation=1.0, **
     return MetricSet(**base)
 
 
-def test_net_pl_is_after_fees():
+def test_net_pl_is_after_both_commissions():
+    """A round trip pays commission twice.
+
+    This test previously encoded only the sell-side fee, which is the defect the
+    audit found (§8): it made every P/L optimistic by about `fee_rate` of the
+    position. Deep-dive coverage lives in tests/test_portfolio_fees.py.
+    """
     holding = Holding(symbol="ATW", quantity=10, buy_price=410.0)
     metric = _metric(price=415.0)
     ev = evaluate_holding(holding, metric, score_opportunity(metric), fee_rate=0.005)
@@ -45,8 +53,10 @@ def test_net_pl_is_after_fees():
     assert ev.cost_basis == 4100.0
     assert ev.market_value == 4150.0
     assert ev.gross_pl == 50.0
-    assert ev.fees == 4150.0 * 0.005  # 20.75
-    assert round(ev.net_pl, 2) == round(50.0 - 20.75, 2)  # 29.25
+    assert ev.entry_fees == 4100.0 * 0.005  # 20.50, previously ignored
+    assert ev.exit_fees == 4150.0 * 0.005  # 20.75
+    assert ev.fees == pytest.approx(41.25)
+    assert round(ev.net_pl, 2) == round(50.0 - 41.25, 2)  # 8.75
 
 
 def test_advice_hold_when_trend_intact():

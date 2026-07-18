@@ -10,10 +10,10 @@ Formulas (weights documented in the *_WEIGHTS dicts below):
            (minus a small "surchauffe" penalty after a > +4% day)
 - medium = 0.35 tendance(30j/90j) + 0.25 moyennes mobiles + 0.15 secteur
            + 0.15 volatilite (inverse) + 0.10 actus
-- long   = 0.30 tendance longue (90j + MM200 si >= 180 j d'historique)
-           + 0.30 stabilite (volatilite + drawdown) + 0.20 structure 52 semaines
+- long   = 0.25 tendance longue (90j + MM200 si >= 180 j d'historique)
+           + 0.20 stabilite (volatilite + drawdown) + 0.15 structure 52 semaines
            + 0.10 secteur + 0.10 evenements (dividende / resultats)
-           Les fondamentaux ne sont PAS collectes : toujours listes en "missing".
+           + 0.20 fondamentaux (PER, PBR, ROE, rendement — Phase 1b)
 
 - risk       = clamp(volatilite + momentum negatif + drawdown + volume de baisse
                + actus negatives + incertitude d'historique), 0-100 (haut = risque)
@@ -56,12 +56,153 @@ MEDIUM_WEIGHTS = {
     "actualites": 0.10,
 }
 LONG_WEIGHTS = {
-    "tendance_longue": 0.30,
-    "stabilite": 0.30,
-    "structure_52s": 0.20,
+    "tendance_longue": 0.25,
+    "stabilite": 0.20,
+    "structure_52s": 0.15,
     "secteur": 0.10,
     "evenements": 0.10,
+    # Added once the Phase 1b collectors actually populated `fundamentals`. Until
+    # then this module hard-coded "Fondamentaux non collectés" into every long
+    # assessment — a statement that had been false since the issuer collector
+    # shipped (AUDIT_2026-07-18.md §7). A stock at PER 45 scored exactly like one
+    # at PER 8 over a six-month horizon, which is the one horizon where valuation
+    # is supposed to matter most.
+    #
+    # 20% is a stated prior, not a fitted weight: it is large enough that valuation
+    # can change a verdict, small enough that six published ratios cannot outvote
+    # three years of price behaviour. The backtest's ablation study
+    # (services/backtest) is what can move it.
+    "fondamentaux": 0.20,
 }
+
+# --------------------------------------------------------------------------- #
+# Fundamentals scoring                                                          #
+# --------------------------------------------------------------------------- #
+#
+# Six ratios are published per issuer (BPA, ROE, payout, rendement, PER, PBR).
+# Revenue, margins and balance-sheet items are not published in machine-readable
+# form, so there is no book-value or leverage term here — absent, never guessed.
+#
+# NORMALISATION, HONESTLY
+# These are ABSOLUTE bands, not sector-relative percentiles. Sector-relative would
+# be better — a PER of 20 means different things for a bank and a telecom — but it
+# needs the cross-section, and `assess_long` scores one symbol at a time by design.
+# Doing it properly means moving the ranking up into `gather()`, which is a real
+# refactor rather than a tweak; it is recorded as remaining work instead of being
+# faked with a constant that pretends to be a sector median.
+#
+# The bands below are winsorised on purpose: a PER of 300 (a company that barely
+# earned anything last year) and a PER of 60 are both simply "expensive", and
+# letting the first dominate a weighted mean would be a data artefact driving a
+# recommendation. Negative earnings are NOT scored as a cheap valuation — a
+# negative PER is meaningless as a multiple, so it is treated as unmeasurable and
+# lowers coverage.
+
+FUNDAMENTAL_WEIGHTS = {
+    "valorisation": 0.45,  # PER + PBR
+    "rentabilite": 0.35,  # ROE
+    "rendement": 0.20,  # dividend yield
+}
+
+# (value, score) anchors, linearly interpolated between them and clamped outside.
+_PER_BANDS = ((6.0, 90.0), (12.0, 70.0), (18.0, 50.0), (25.0, 30.0), (40.0, 10.0))
+_PBR_BANDS = ((0.6, 90.0), (1.2, 70.0), (2.0, 50.0), (3.5, 30.0), (6.0, 10.0))
+_ROE_BANDS = ((2.0, 10.0), (8.0, 35.0), (13.0, 55.0), (18.0, 75.0), (25.0, 92.0))
+_YIELD_BANDS = ((0.0, 20.0), (2.0, 45.0), (4.0, 65.0), (6.0, 82.0), (9.0, 92.0))
+
+
+def _interpolate(value: float, bands: tuple[tuple[float, float], ...]) -> float:
+    """Piecewise-linear lookup, clamped at both ends (the winsorisation)."""
+    first_x, first_y = bands[0]
+    if value <= first_x:
+        return first_y
+    for (x0, y0), (x1, y1) in zip(bands, bands[1:]):
+        if value <= x1:
+            span = x1 - x0
+            return y0 + (y1 - y0) * ((value - x0) / span) if span else y0
+    return bands[-1][1]
+
+
+def score_fundamentals(fundamentals) -> tuple[float | None, list[str], list[str], list[str]]:  # noqa: ANN001
+    """(score, positives, negatives, missing) from the published ratios.
+
+    Returns None when nothing is measurable, so the caller's coverage drops rather
+    than a neutral 50 being invented — the same contract as every other component.
+    """
+    positives: list[str] = []
+    negatives: list[str] = []
+    missing: list[str] = []
+
+    if fundamentals is None or not getattr(fundamentals, "has_data", False):
+        missing.append(
+            "Ratios fondamentaux (PER, PBR, ROE, rendement) non collectés pour ce titre."
+        )
+        return None, positives, negatives, missing
+
+    components: dict[str, float | None] = {}
+
+    # Valuation: PER and PBR, averaged over whichever is available.
+    valuation_parts: list[float] = []
+    per = getattr(fundamentals, "per", None)
+    if per is not None and per > 0:
+        valuation_parts.append(_interpolate(per, _PER_BANDS))
+        if per <= 12:
+            positives.append(f"Valorisation modérée (PER {per:.1f}).")
+        elif per >= 25:
+            negatives.append(f"Valorisation tendue (PER {per:.1f}).")
+    elif per is not None and per <= 0:
+        missing.append("PER négatif (bénéfice négatif) : non exploitable comme multiple.")
+    else:
+        missing.append("PER non publié.")
+
+    pbr = getattr(fundamentals, "pbr", None)
+    if pbr is not None and pbr > 0:
+        valuation_parts.append(_interpolate(pbr, _PBR_BANDS))
+        if pbr <= 1.0:
+            positives.append(f"Cours sous l'actif net comptable (PBR {pbr:.2f}).")
+    else:
+        missing.append("PBR non publié.")
+
+    components["valorisation"] = (
+        sum(valuation_parts) / len(valuation_parts) if valuation_parts else None
+    )
+
+    roe = getattr(fundamentals, "roe", None)
+    if roe is not None:
+        components["rentabilite"] = _interpolate(roe, _ROE_BANDS)
+        if roe >= 15:
+            positives.append(f"Rentabilité élevée (ROE {roe:.1f}%).")
+        elif roe <= 5:
+            negatives.append(f"Rentabilité faible (ROE {roe:.1f}%).")
+    else:
+        components["rentabilite"] = None
+        missing.append("ROE non publié.")
+
+    dividend_yield = getattr(fundamentals, "dividend_yield", None)
+    if dividend_yield is not None:
+        components["rendement"] = _interpolate(dividend_yield, _YIELD_BANDS)
+        if dividend_yield >= 4:
+            positives.append(f"Rendement du dividende attractif ({dividend_yield:.1f}%).")
+    else:
+        components["rendement"] = None
+        missing.append("Rendement du dividende non publié.")
+
+    available = {k: v for k, v in components.items() if v is not None}
+    if not available:
+        return None, positives, negatives, missing
+
+    coverage = sum(FUNDAMENTAL_WEIGHTS[k] for k in available)
+    score = sum(v * FUNDAMENTAL_WEIGHTS[k] for k, v in available.items()) / coverage
+    # Same shrink-to-neutral rule the horizons use: a fundamental verdict resting
+    # on one of three sub-components must not speak as loudly as a complete one.
+    score = 50 + (score - 50) * min(1.0, coverage / 0.8)
+
+    if getattr(fundamentals, "per_is_derived", False):
+        missing.append(
+            "PER calculé (cours / BPA) faute de valeur publiée : inférence, pas donnée officielle."
+        )
+    return round(clamp(score), 1), positives, negatives, missing
+
 
 COMPONENT_LABELS_FR = {
     "momentum_court": "Momentum court",
@@ -309,11 +450,19 @@ def assess_medium(metric: MetricSet, news: NewsContext) -> HorizonAssessment:
     return _aggregate("medium", components, MEDIUM_WEIGHTS, positives, negatives, missing, notes)
 
 
-def assess_long(metric: MetricSet, news: NewsContext, history_days: int) -> HorizonAssessment:
-    """Long-term setup (6+ months): long trend, stability, 52-week structure, sector, events.
+def assess_long(
+    metric: MetricSet,
+    news: NewsContext,
+    history_days: int,
+    fundamentals=None,  # noqa: ANN001 - a research.context.Fundamentals, kept untyped to avoid a cycle
+) -> HorizonAssessment:
+    """Long-term setup (6+ months): long trend, stability, 52-week structure,
+    sector, events and — since the Phase 1b collectors landed — the published
+    fundamentals.
 
-    Fundamentals are NOT collected by the platform yet, so they are always
-    reported as missing data instead of being guessed.
+    `fundamentals` is optional so every existing caller keeps working; absent, the
+    component is simply unavailable and lowers coverage, exactly like any other
+    missing input.
     """
     components: dict[str, float | None] = {}
     positives: list[str] = []
@@ -383,8 +532,15 @@ def assess_long(metric: MetricSet, news: NewsContext, history_days: int) -> Hori
         components["evenements"] = None
         missing.append("Aucun événement d'entreprise récent collecté (avis officiels).")
 
-    # Toujours annoncé : pas de fondamentaux dans la plateforme aujourd'hui.
-    missing.append("Fondamentaux (PER, dividende par action, bénéfices) non collectés pour l'instant.")
+    # Fondamentaux. Cette ligne annonçait inconditionnellement « non collectés »,
+    # y compris quand la table `fundamentals` était pleine — l'affirmation était
+    # fausse depuis la Phase 1b.
+    fundamental_score, f_positives, f_negatives, f_missing = score_fundamentals(fundamentals)
+    components["fondamentaux"] = fundamental_score
+    positives.extend(f_positives)
+    negatives.extend(f_negatives)
+    missing.extend(f_missing)
+
     if history_days < 120:
         notes.append(
             f"Seulement {history_days} jours d'historique collecté : l'analyse long terme reste indicative."
@@ -393,11 +549,16 @@ def assess_long(metric: MetricSet, news: NewsContext, history_days: int) -> Hori
     return _aggregate("long", components, LONG_WEIGHTS, positives, negatives, missing, notes)
 
 
-def assess_all(metric: MetricSet, news: NewsContext, history_days: int) -> dict[str, HorizonAssessment]:
+def assess_all(
+    metric: MetricSet,
+    news: NewsContext,
+    history_days: int,
+    fundamentals=None,  # noqa: ANN001 - see assess_long
+) -> dict[str, HorizonAssessment]:
     return {
         "short": assess_short(metric, news),
         "medium": assess_medium(metric, news),
-        "long": assess_long(metric, news, history_days),
+        "long": assess_long(metric, news, history_days, fundamentals),
     }
 
 

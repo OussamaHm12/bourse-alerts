@@ -144,7 +144,9 @@ def decide(
     """Reach the verdict. `reliability` is the learned per-analyst confidence
     multiplier (Phase 3); absent or 1.0 means the analyst has not yet earned a
     track record, and the debate then rests on stated confidence alone."""
-    assessments = assess_all(ctx.metric, ctx.news, ctx.history_days)
+    # Fundamentals reach the long horizon here: the context already carries them,
+    # and the score used to ignore them entirely.
+    assessments = assess_all(ctx.metric, ctx.news, ctx.history_days, ctx.fundamentals)
     reliability = reliability or {}
 
     # Phase 6: the analysts argue, and the argument is resolved explicitly.
