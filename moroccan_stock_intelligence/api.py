@@ -4,11 +4,14 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 
+from moroccan_stock_intelligence.api_models import PushSubscriptionIn
 from moroccan_stock_intelligence.config import settings
+from moroccan_stock_intelligence.services import auth, ratelimit
 from moroccan_stock_intelligence.db import get_engine, get_session_factory, init_db
 from moroccan_stock_intelligence.logging_config import configure_logging
 from moroccan_stock_intelligence.scheduler import build_scheduler, run_update_now
@@ -86,7 +89,160 @@ async def lifespan(app: FastAPI):
         scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title="Moroccan Stock Intelligence", lifespan=lifespan)
+# ---- Authentication --------------------------------------------------------
+# The platform holds real holdings, buy prices and P/L, and until now served every
+# one of them to anyone who knew the URL (AUDIT_TECHNIQUE.md §9, rated CRITIQUE).
+#
+# `dependencies=` on the app applies the guard to EVERY route at once, including
+# routes written after this line. That ordering is the point: an allowlist of
+# public paths (services/auth.py) is the only way in, so forgetting to protect a
+# new endpoint is no longer possible — you now have to un-protect it on purpose.
+
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _refuse_cross_origin_write(request: Request) -> None:
+    """Defence in depth behind SameSite=Strict, for state-changing requests.
+
+    Compares HOSTS ONLY, never the scheme. Railway terminates TLS and forwards
+    plain HTTP, and `cli serve` runs uvicorn without --proxy-headers, so
+    `request.url.scheme` is "http" in the container while the browser's Origin
+    says "https". Comparing full origins would 403 every write in production while
+    passing every test on localhost.
+    """
+    if request.method not in _UNSAFE_METHODS:
+        return
+    origin = request.headers.get("origin")
+    if origin is None:
+        return  # curl / smoke test: browsers always send Origin on a write
+    if urlparse(origin).netloc != request.headers.get("host"):
+        LOG.warning("auth_cross_origin_write_refused origin=%s", origin)
+        raise HTTPException(status_code=403, detail="cross-origin write refused")
+
+
+def require_auth(request: Request) -> None:
+    """401 unauthenticated · 403 forbidden · 503 misconfigured.
+
+    503 rather than "let it through": an unset AUTH_PASSWORD is an operator error,
+    and the safe reading of an operator error on an auth layer is "closed". The
+    reason stays in the log — telling a caller *why* auth is unavailable would
+    tell an attacker whether the password is merely short.
+    """
+    if auth.is_public(request.url.path):
+        return
+    state = auth.config_state()
+    if not state.configured:
+        LOG.error("auth_not_configured reason=%s path=%s", state.reason, request.url.path)
+        raise HTTPException(status_code=503, detail="authentication is not configured")
+    if not auth.verify_token(request.cookies.get(auth.COOKIE_NAME)):
+        raise HTTPException(status_code=401, detail="authentication required")
+    _refuse_cross_origin_write(request)
+
+
+app = FastAPI(
+    title="Moroccan Stock Intelligence",
+    lifespan=lifespan,
+    dependencies=[Depends(require_auth)],
+)
+
+
+def _client_key(request: Request) -> str:
+    return auth.client_key(
+        peer=request.client.host if request.client else None,
+        forwarded_for=request.headers.get("x-forwarded-for"),
+    )
+
+
+def _enforce_limit(bucket: str, request: Request) -> None:
+    """429 with a truthful Retry-After when the caller has spent its budget.
+
+    Applied to the routes that scrape a third party, recompute the research
+    engine, or notify the owner's devices — see services/ratelimit for why each
+    budget is what it is. Cheap cached reads are deliberately not limited.
+    """
+    wait = ratelimit.check(bucket, _client_key(request))
+    if wait:
+        LOG.warning("rate_limited bucket=%s client=%s", bucket, _client_key(request))
+        raise HTTPException(
+            status_code=429,
+            detail="too many requests",
+            headers={"Retry-After": str(wait)},
+        )
+
+
+@app.post("/api/auth/login")
+async def auth_login(request: Request, response: Response) -> dict:
+    """Exchange the password for a signed session cookie.
+
+    The password only ever travels here, in the body, over TLS. It is never stored
+    by the client and never reaches the compiled bundle.
+    """
+    state = auth.config_state()
+    if not state.configured:
+        LOG.error("auth_not_configured reason=%s path=/api/auth/login", state.reason)
+        raise HTTPException(status_code=503, detail="authentication is not configured")
+
+    # Two layers, doing different jobs: the blunt request ceiling below stops a
+    # flood of well-formed logins burning PBKDF2 cycles, while auth's own lockout
+    # (further down) punishes *failures* specifically.
+    _enforce_limit("login", request)
+
+    key = _client_key(request)
+    wait = auth.throttle_retry_after(key)
+    if wait:
+        raise HTTPException(
+            status_code=429,
+            detail="too many failed attempts",
+            headers={"Retry-After": str(wait)},
+        )
+
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 - any unparseable body is the same 400
+        raise HTTPException(status_code=400, detail="expected a JSON body") from None
+    password = body.get("password") if isinstance(body, dict) else None
+
+    if not auth.check_password(password):
+        auth.record_failure(key)
+        LOG.warning("auth_failed client=%s", key)
+        raise HTTPException(status_code=401, detail="invalid password")
+
+    auth.record_success(key)
+    response.set_cookie(auth.COOKIE_NAME, auth.mint_token(), **auth.cookie_params())
+    LOG.info("auth_login_ok client=%s", key)
+    return {"ok": True}
+
+
+@app.post("/api/auth/logout")
+def auth_logout(response: Response) -> dict:
+    params = auth.cookie_params()
+    response.delete_cookie(
+        auth.COOKIE_NAME,
+        path=params["path"],
+        httponly=params["httponly"],
+        secure=params["secure"],
+        samesite=params["samesite"],
+    )
+    return {"ok": True}
+
+
+@app.get("/api/auth/status")
+@app.get("/api/auth/session")
+def auth_status(request: Request) -> dict:
+    """Public: lets the PWA decide between the login screen and the app.
+
+    Says only whether a secret is configured and whether THIS caller holds a valid
+    session — no personal data, and nothing an attacker cannot already learn by
+    sending a login attempt.
+
+    Served under both names: `/status` is what the deployed bundle calls,
+    `/session` is what a client naturally reaches for. Same handler, so they can
+    never disagree.
+    """
+    return {
+        "configured": auth.config_state().configured,
+        "authenticated": auth.verify_token(request.cookies.get(auth.COOKIE_NAME)),
+    }
 
 
 @app.middleware("http")
@@ -199,16 +355,26 @@ def vapid_public_key() -> dict:
 
 
 @app.post("/api/push/subscribe")
-async def push_subscribe(request: Request) -> dict:
-    body = await request.json()
+def push_subscribe(subscription: PushSubscriptionIn) -> dict:
+    """Register a device for web push.
+
+    The body is a typed model, so a malformed payload is a 422 from FastAPI rather
+    than a 500 from deep inside the persistence layer — and an endpoint that is not
+    an https URL never reaches `webpush()`, which would otherwise make it an SSRF
+    primitive (see api_models).
+    """
     with SessionFactory() as session:
-        save_subscription(session, body)
+        try:
+            save_subscription(session, subscription.model_dump())
+        except ValueError as exc:  # the device ceiling — a client error, not a bug
+            raise HTTPException(status_code=409, detail=str(exc)) from None
         session.commit()
     return {"ok": True}
 
 
 @app.post("/api/push/test")
-def push_test() -> dict:
+def push_test(request: Request) -> dict:
+    _enforce_limit("notify", request)
     with SessionFactory() as session:
         save_notification(
             session, "test", "Notification de test", "Ceci est une notification de test ✅"
@@ -220,12 +386,16 @@ def push_test() -> dict:
 
 
 @app.post("/api/run-now")
-async def run_now(background_tasks: BackgroundTasks) -> dict:
+async def run_now(request: Request, background_tasks: BackgroundTasks) -> dict:
     """Manually trigger a collect + analyze + NOTIFY run (Telegram digest + push).
 
     This is the "send me a digest now" action. For merely bringing the data up to
     date — what opening the app does — use /api/refresh, which is silent.
+
+    Rate limited on the `notify` budget: it both scrapes the exchange and messages
+    the owner's devices, so a loop here is the most expensive request in the API.
     """
+    _enforce_limit("notify", request)
     background_tasks.add_task(run_update_now, SessionFactory, "Manuel (bouton)")
     return {"queued": True}
 
@@ -237,7 +407,9 @@ async def run_now(background_tasks: BackgroundTasks) -> dict:
 
 
 @app.post("/api/refresh")
-async def refresh(background_tasks: BackgroundTasks, force: bool = False) -> dict:
+async def refresh(
+    request: Request, background_tasks: BackgroundTasks, force: bool = False
+) -> dict:
     """Re-collect the market unless it was already collected recently.
 
     Returns immediately; the scrape runs in the background. `status` tells the app
@@ -245,7 +417,12 @@ async def refresh(background_tasks: BackgroundTasks, force: bool = False) -> dic
       * "fresh"   — data is inside the cooldown, nothing to do
       * "running" — a refresh (or a scheduled job) is already collecting
       * "started" — a refresh was launched; poll /api/refresh/status until it ends
+
+    Rate limited on the `collect` budget. The cooldown already bounds real work,
+    but `force=true` bypasses the cooldown by design — this bounds the bypass, so
+    the platform can never be turned into an amplifier aimed at the exchange.
     """
+    _enforce_limit("collect", request)
     with SessionFactory() as session:
         if not force and not is_stale(session):
             return {"status": "fresh", **status_payload(session)}
@@ -316,7 +493,17 @@ def analysis_stock(symbol: str, horizon: str = "short") -> dict:
 # Served from the research database (the store IS the cache) unless the report is
 # stale or ?fresh=true forces a regeneration.
 @app.get("/api/report/{symbol}")
-def report_stock(symbol: str, horizon: str = "short", fresh: bool = False) -> dict:
+def report_stock(
+    request: Request, symbol: str, horizon: str = "short", fresh: bool = False
+) -> dict:
+    """Serve the stored report; `fresh=true` regenerates it.
+
+    Only the regenerating path is rate limited: a cache hit is a row read, while
+    `fresh=true` runs the ten analysts and writes reports, predictions and thesis
+    changes. Limiting the cheap path would slow the app down for nothing.
+    """
+    if fresh:
+        _enforce_limit("heavy", request)
     with SessionFactory() as session:
         report = analyze_report(session, symbol, _check_horizon(horizon), fresh=fresh)
     if report is None:

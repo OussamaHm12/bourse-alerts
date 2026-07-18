@@ -22,8 +22,10 @@ uvicorn[standard]==0.34.0
 #   urllib3      -> scrapers/base.py, collectors/http.py, news.py (disable_warnings)
 #   cryptography -> services/push.py (VAPID key handling)
 #   py-vapid     -> services/push.py (Vapid01)
+#   pydantic     -> api_models.py (request validation at the API edge)
 cryptography==49.0.0
 py-vapid==1.9.4
+pydantic==2.13.4
 urllib3==2.7.0
 
 # NOT listed on purpose: `anthropic`. The LLM narrator is opt-in (LLM_PROVIDER=none

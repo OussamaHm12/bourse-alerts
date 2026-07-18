@@ -20,11 +20,30 @@ from fastapi.testclient import TestClient
 from moroccan_stock_intelligence import api as api_module
 from moroccan_stock_intelligence.models import Base, News, Price, Stock
 
+from tests.conftest import TEST_AUTH_PASSWORD
+
 
 @pytest.fixture(scope="module")
 def client():
-    # No context manager: entering it would run the lifespan and start the
-    # scheduler. Routes do not need it.
+    """An **authenticated** client.
+
+    Every route except the handful in `auth.PUBLIC_PATHS` now requires a session
+    (deny-by-default), so a bare TestClient would exercise the auth layer rather
+    than the routes. Logging in once per module keeps these tests about what they
+    were written to check; `test_auth.py` owns the auth behaviour itself.
+
+    No context manager: entering it would run the lifespan and start the
+    scheduler. Routes do not need it.
+    """
+    test_client = TestClient(api_module.app)
+    response = test_client.post("/api/auth/login", json={"password": TEST_AUTH_PASSWORD})
+    assert response.status_code == 200, response.text
+    return test_client
+
+
+@pytest.fixture(scope="module")
+def anonymous_client():
+    """A client with no session — for asserting that a route is actually protected."""
     return TestClient(api_module.app)
 
 
