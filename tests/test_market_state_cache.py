@@ -159,7 +159,15 @@ def test_a_history_backfill_invalidates_even_though_it_inserts_OLD_rows(session,
     # Asserted on the metrics, not the short-horizon components: old séances do not
     # move momentum 1-5d or the 90-day support, and correctly so. What they do move
     # is the long structure — which is exactly the data the backfill exists to seed.
-    assert metrics_after[0].week52_low < metrics_before[0].week52_low
+    #
+    # Since the indicator depth guards (services/analytics), the 40 séances this
+    # fixture starts with are no longer enough to state a 52-week range at all, so
+    # the backfill's effect is now visible as absent -> present rather than as a
+    # lower low. That is the same property, asserted more strictly: the cache must
+    # observe that the long structure became computable.
+    assert metrics_before[0].week52_low is None, "40 séances must not yield a 52-week range"
+    assert metrics_after[0].week52_low is not None, "340 séances must"
+    assert metrics_after[0].week52_low < metrics_before[0].price
 
 
 def test_reclassifying_news_invalidates_even_though_it_only_UPDATEs(session, monkeypatch):
