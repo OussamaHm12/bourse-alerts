@@ -1,0 +1,42 @@
+{
+  "horizon": "medium",
+  "reference": {
+    "spread": 5.7793,
+    "mean_return": 6.0744,
+    "top_band_mean": 11.1191,
+    "monotonic": true
+  },
+  "variants": {
+    "sans_actualites": {
+      "spread": 5.7793,
+      "mean_return": 6.0744,
+      "top_band_mean": 11.1191,
+      "monotonic": true
+    },
+    "sans_moyennes_mobiles": {
+      "spread": 11.286,
+      "mean_return": 6.0224,
+      "top_band_mean": 16.0495,
+      "monotonic": true
+    },
+    "sans_secteur": {
+      "spread": 3.5722,
+      "mean_return": 5.9734,
+      "top_band_mean": 10.1731,
+      "monotonic": true
+    },
+    "sans_tendance": {
+      "spread": 0.273,
+      "mean_return": 5.9734,
+      "top_band_mean": 6.6434,
+      "monotonic": false
+    },
+    "sans_volatilite": {
+      "spread": 5.1387,
+      "mean_return": 5.9638,
+      "top_band_mean": 11.5716,
+      "monotonic": false
+    }
+  },
+  "note": "Un écart proche de la référence signifie que le composant retiré n'apportait pas d'information mesurable sur cet historique. Les différences sont à lire avec les mêmes réserves que le backtest lui-même (fenêtres chevauchantes, échantillon court)."
+}

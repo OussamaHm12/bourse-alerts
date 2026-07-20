@@ -1,0 +1,682 @@
+{
+  "version": "1.0",
+  "generated_at": "2026-07-20T08:48:42.640018+00:00",
+  "config": {
+    "start": null,
+    "end": null,
+    "horizons": [
+      "short",
+      "medium"
+    ],
+    "fee_rate": 0.005,
+    "step": 10,
+    "min_history_days": 60
+  },
+  "observations": 6801,
+  "distinct_symbols": 53,
+  "distinct_dates": 68,
+  "sessions_available": 741,
+  "by_horizon": {
+    "short": {
+      "all": {
+        "label": "toutes",
+        "count": 3533,
+        "mean_return": -0.2047,
+        "median_return": -1.0,
+        "mean_excess": -0.5486,
+        "hit_rate": 0.2499,
+        "stdev": 7.3129,
+        "sharpe_like": -0.028,
+        "worst": -21.8272,
+        "best": 153.4848,
+        "mean_return_ci95": [
+          -0.4458,
+          0.0364
+        ],
+        "beats_benchmark": false,
+        "significant": false
+      },
+      "by_score_band": {
+        "0-45 (éviter)": {
+          "label": "0-45 (éviter)",
+          "count": 2646,
+          "mean_return": -0.2994,
+          "median_return": -1.0,
+          "mean_excess": -0.6159,
+          "hit_rate": 0.2585,
+          "stdev": 6.9101,
+          "sharpe_like": -0.0433,
+          "worst": -21.75,
+          "best": 153.4848,
+          "mean_return_ci95": [
+            -0.5627,
+            -0.0361
+          ],
+          "beats_benchmark": false,
+          "significant": true
+        },
+        "45-55 (neutre)": {
+          "label": "45-55 (neutre)",
+          "count": 498,
+          "mean_return": -0.2535,
+          "median_return": -1.0,
+          "mean_excess": -0.6713,
+          "hit_rate": 0.2269,
+          "stdev": 6.9108,
+          "sharpe_like": -0.0367,
+          "worst": -17.6667,
+          "best": 79.4432,
+          "mean_return_ci95": [
+            -0.8605,
+            0.3535
+          ],
+          "beats_benchmark": false,
+          "significant": false
+        },
+        "55-70 (surveiller)": {
+          "label": "55-70 (surveiller)",
+          "count": 344,
+          "mean_return": -0.0009,
+          "median_return": -1.0,
+          "mean_excess": -0.403,
+          "hit_rate": 0.1977,
+          "stdev": 7.3596,
+          "sharpe_like": -0.0001,
+          "worst": -12.3695,
+          "best": 90.3283,
+          "mean_return_ci95": [
+            -0.7786,
+            0.7768
+          ],
+          "beats_benchmark": false,
+          "significant": false
+        },
+        "70-100 (opportunité)": {
+          "label": "70-100 (opportunité)",
+          "count": 45,
+          "mean_return": 4.348,
+          "median_return": -1.0,
+          "mean_excess": 3.6558,
+          "hit_rate": 0.4,
+          "stdev": 20.9448,
+          "sharpe_like": 0.2076,
+          "worst": -21.8272,
+          "best": 120.9672,
+          "mean_return_ci95": [
+            -1.7716,
+            10.4676
+          ],
+          "beats_benchmark": true,
+          "significant": false
+        }
+      },
+      "by_recommendation": {
+        "AVOID": {
+          "label": "AVOID",
+          "count": 2606,
+          "mean_return": -0.3013,
+          "median_return": -1.0,
+          "mean_excess": -0.6143,
+          "hit_rate": 0.2575,
+          "stdev": 6.9162,
+          "sharpe_like": -0.0436,
+          "worst": -21.75,
+          "best": 153.4848,
+          "mean_return_ci95": [
+            -0.5668,
+            -0.0358
+          ],
+          "beats_benchmark": false,
+          "significant": true
+        },
+        "RISKY": {
+          "label": "RISKY",
+          "count": 49,
+          "mean_return": 0.3803,
+          "median_return": -0.0714,
+          "mean_excess": -0.3481,
+          "hit_rate": 0.3878,
+          "stdev": 6.3794,
+          "sharpe_like": 0.0596,
+          "worst": -10.3745,
+          "best": 19.1562,
+          "mean_return_ci95": [
+            -1.4059,
+            2.1665
+          ],
+          "beats_benchmark": false,
+          "significant": false
+        },
+        "STRONG_OPPORTUNITY": {
+          "label": "STRONG_OPPORTUNITY",
+          "count": 45,
+          "mean_return": 4.348,
+          "median_return": -1.0,
+          "mean_excess": 3.6558,
+          "hit_rate": 0.4,
+          "stdev": 20.9448,
+          "sharpe_like": 0.2076,
+          "worst": -21.8272,
+          "best": 120.9672,
+          "mean_return_ci95": [
+            -1.7716,
+            10.4676
+          ],
+          "beats_benchmark": true,
+          "significant": false
+        },
+        "WATCH": {
+          "label": "WATCH",
+          "count": 833,
+          "mean_return": -0.1829,
+          "median_return": -1.0,
+          "mean_excess": -0.582,
+          "hit_rate": 0.2101,
+          "stdev": 7.1089,
+          "sharpe_like": -0.0257,
+          "worst": -17.6667,
+          "best": 90.3283,
+          "mean_return_ci95": [
+            -0.6657,
+            0.2999
+          ],
+          "beats_benchmark": false,
+          "significant": false
+        }
+      },
+      "spread_top_minus_neutral": {
+        "value": 4.6015,
+        "top_count": 45,
+        "neutral_count": 498,
+        "top_ci95": [
+          -1.7716,
+          10.4676
+        ],
+        "neutral_ci95": [
+          -0.8605,
+          0.3535
+        ],
+        "separated": false
+      },
+      "monotonic": true
+    },
+    "medium": {
+      "all": {
+        "label": "toutes",
+        "count": 3268,
+        "mean_return": 5.4437,
+        "median_return": -0.4315,
+        "mean_excess": 2.8199,
+        "hit_rate": 0.4207,
+        "stdev": 28.8401,
+        "sharpe_like": 0.1888,
+        "worst": -42.4815,
+        "best": 622.6772,
+        "mean_return_ci95": [
+          4.4549,
+          6.4325
+        ],
+        "beats_benchmark": true,
+        "significant": true
+      },
+      "by_score_band": {
+        "0-45 (éviter)": {
+          "label": "0-45 (éviter)",
+          "count": 1247,
+          "mean_return": 2.7518,
+          "median_return": -0.75,
+          "mean_excess": 0.2933,
+          "hit_rate": 0.4082,
+          "stdev": 26.6052,
+          "sharpe_like": 0.1034,
+          "worst": -42.4815,
+          "best": 622.6772,
+          "mean_return_ci95": [
+            1.2751,
+            4.2285
+          ],
+          "beats_benchmark": true,
+          "significant": true
+        },
+        "45-55 (neutre)": {
+          "label": "45-55 (neutre)",
+          "count": 488,
+          "mean_return": 2.873,
+          "median_return": -1.0,
+          "mean_excess": 0.4875,
+          "hit_rate": 0.3648,
+          "stdev": 17.0231,
+          "sharpe_like": 0.1688,
+          "worst": -32.7647,
+          "best": 130.7073,
+          "mean_return_ci95": [
+            1.3626,
+            4.3834
+          ],
+          "beats_benchmark": true,
+          "significant": true
+        },
+        "55-70 (surveiller)": {
+          "label": "55-70 (surveiller)",
+          "count": 770,
+          "mean_return": 5.3046,
+          "median_return": -1.0,
+          "mean_excess": 2.7379,
+          "hit_rate": 0.3961,
+          "stdev": 29.0118,
+          "sharpe_like": 0.1828,
+          "worst": -24.2739,
+          "best": 313.7321,
+          "mean_return_ci95": [
+            3.2554,
+            7.3538
+          ],
+          "beats_benchmark": true,
+          "significant": true
+        },
+        "70-100 (opportunité)": {
+          "label": "70-100 (opportunité)",
+          "count": 763,
+          "mean_return": 11.6277,
+          "median_return": 1.5205,
+          "mean_excess": 8.5236,
+          "hit_rate": 0.502,
+          "stdev": 36.3261,
+          "sharpe_like": 0.3201,
+          "worst": -37.5583,
+          "best": 330.7549,
+          "mean_return_ci95": [
+            9.0501,
+            14.2053
+          ],
+          "beats_benchmark": true,
+          "significant": true
+        }
+      },
+      "by_recommendation": {
+        "AVOID": {
+          "label": "AVOID",
+          "count": 1203,
+          "mean_return": 2.8551,
+          "median_return": -0.75,
+          "mean_excess": 0.4037,
+          "hit_rate": 0.4098,
+          "stdev": 26.9475,
+          "sharpe_like": 0.106,
+          "worst": -42.4815,
+          "best": 622.6772,
+          "mean_return_ci95": [
+            1.3323,
+            4.3779
+          ],
+          "beats_benchmark": true,
+          "significant": true
+        },
+        "RISKY": {
+          "label": "RISKY",
+          "count": 47,
+          "mean_return": 0.3779,
+          "median_return": -0.66,
+          "mean_excess": -2.5495,
+          "hit_rate": 0.383,
+          "stdev": 14.1202,
+          "sharpe_like": 0.0268,
+          "worst": -36.7459,
+          "best": 61.3958,
+          "mean_return_ci95": [
+            -3.659,
+            4.4148
+          ],
+          "beats_benchmark": false,
+          "significant": false
+        },
+        "STRONG_OPPORTUNITY": {
+          "label": "STRONG_OPPORTUNITY",
+          "count": 762,
+          "mean_return": 11.635,
+          "median_return": 1.5162,
+          "mean_excess": 8.5352,
+          "hit_rate": 0.5013,
+          "stdev": 36.3494,
+          "sharpe_like": 0.3201,
+          "worst": -37.5583,
+          "best": 330.7549,
+          "mean_return_ci95": [
+            9.0541,
+            14.2159
+          ],
+          "beats_benchmark": true,
+          "significant": true
+        },
+        "WATCH": {
+          "label": "WATCH",
+          "count": 1256,
+          "mean_return": 4.3564,
+          "median_return": -1.0,
+          "mean_excess": 1.8676,
+          "hit_rate": 0.3838,
+          "stdev": 25.0871,
+          "sharpe_like": 0.1737,
+          "worst": -32.7647,
+          "best": 313.7321,
+          "mean_return_ci95": [
+            2.969,
+            5.7438
+          ],
+          "beats_benchmark": true,
+          "significant": true
+        }
+      },
+      "spread_top_minus_neutral": {
+        "value": 8.7547,
+        "top_count": 763,
+        "neutral_count": 488,
+        "top_ci95": [
+          9.0501,
+          14.2053
+        ],
+        "neutral_ci95": [
+          1.3626,
+          4.3834
+        ],
+        "separated": true
+      },
+      "monotonic": true
+    }
+  },
+  "by_sector": {
+    "Agroalimentaire et Production": {
+      "label": "Agroalimentaire et Production",
+      "count": 786,
+      "mean_return": -0.2293,
+      "median_return": -1.0,
+      "mean_excess": -1.6707,
+      "hit_rate": 0.2621,
+      "stdev": 7.2635,
+      "sharpe_like": -0.0316,
+      "worst": -27.8146,
+      "best": 50.5272,
+      "mean_return_ci95": [
+        -0.7371,
+        0.2785
+      ],
+      "beats_benchmark": false,
+      "significant": false
+    },
+    "Assurances": {
+      "label": "Assurances",
+      "count": 655,
+      "mean_return": 0.678,
+      "median_return": -0.8875,
+      "mean_excess": -0.7634,
+      "hit_rate": 0.3313,
+      "stdev": 7.6718,
+      "sharpe_like": 0.0884,
+      "worst": -17.1467,
+      "best": 45.0,
+      "mean_return_ci95": [
+        0.0905,
+        1.2655
+      ],
+      "beats_benchmark": false,
+      "significant": true
+    },
+    "Banques": {
+      "label": "Banques",
+      "count": 895,
+      "mean_return": 0.0569,
+      "median_return": -0.9519,
+      "mean_excess": -1.3832,
+      "hit_rate": 0.3453,
+      "stdev": 7.0926,
+      "sharpe_like": 0.008,
+      "worst": -18.1371,
+      "best": 43.765,
+      "mean_return_ci95": [
+        -0.4078,
+        0.5216
+      ],
+      "beats_benchmark": false,
+      "significant": false
+    },
+    "Boissons": {
+      "label": "Boissons",
+      "count": 262,
+      "mean_return": -1.39,
+      "median_return": -1.3679,
+      "mean_excess": -2.8314,
+      "hit_rate": 0.2519,
+      "stdev": 6.0282,
+      "sharpe_like": -0.2306,
+      "worst": -18.0437,
+      "best": 30.5,
+      "mean_return_ci95": [
+        -2.12,
+        -0.66
+      ],
+      "beats_benchmark": false,
+      "significant": true
+    },
+    "Bâtiment et Matériaux de Construction": {
+      "label": "Bâtiment et Matériaux de Construction",
+      "count": 1059,
+      "mean_return": 3.695,
+      "median_return": -0.0476,
+      "mean_excess": 2.2654,
+      "hit_rate": 0.389,
+      "stdev": 16.1551,
+      "sharpe_like": 0.2287,
+      "worst": -25.2049,
+      "best": 162.0332,
+      "mean_return_ci95": [
+        2.722,
+        4.668
+      ],
+      "beats_benchmark": true,
+      "significant": true
+    },
+    "Chimie": {
+      "label": "Chimie",
+      "count": 262,
+      "mean_return": 0.3806,
+      "median_return": -1.449,
+      "mean_excess": -1.0608,
+      "hit_rate": 0.2863,
+      "stdev": 15.6788,
+      "sharpe_like": 0.0243,
+      "worst": -29.1506,
+      "best": 94.6281,
+      "mean_return_ci95": [
+        -1.5179,
+        2.2791
+      ],
+      "beats_benchmark": false,
+      "significant": false
+    },
+    "Distributeurs": {
+      "label": "Distributeurs",
+      "count": 917,
+      "mean_return": 6.7379,
+      "median_return": -1.0,
+      "mean_excess": 5.2964,
+      "hit_rate": 0.3337,
+      "stdev": 40.9473,
+      "sharpe_like": 0.1646,
+      "worst": -37.5583,
+      "best": 622.6772,
+      "mean_return_ci95": [
+        4.0876,
+        9.3882
+      ],
+      "beats_benchmark": true,
+      "significant": true
+    },
+    "Ingénieries et Biens d'Equipement Industriels": {
+      "label": "Ingénieries et Biens d'Equipement Industriels",
+      "count": 262,
+      "mean_return": 7.9313,
+      "median_return": -1.0,
+      "mean_excess": 6.4898,
+      "hit_rate": 0.2252,
+      "stdev": 42.1373,
+      "sharpe_like": 0.1882,
+      "worst": -42.4815,
+      "best": 313.7321,
+      "mean_return_ci95": [
+        2.8289,
+        13.0337
+      ],
+      "beats_benchmark": true,
+      "significant": true
+    },
+    "Loisirs et Hôtels": {
+      "label": "Loisirs et Hôtels",
+      "count": 131,
+      "mean_return": 1.752,
+      "median_return": -0.5227,
+      "mean_excess": 0.3105,
+      "hit_rate": 0.4351,
+      "stdev": 11.5988,
+      "sharpe_like": 0.151,
+      "worst": -22.4872,
+      "best": 43.2308,
+      "mean_return_ci95": [
+        -0.2342,
+        3.7382
+      ],
+      "beats_benchmark": true,
+      "significant": false
+    },
+    "Matériels, Logiciels et Services Informatiques": {
+      "label": "Matériels, Logiciels et Services Informatiques",
+      "count": 393,
+      "mean_return": 0.694,
+      "median_return": -1.1169,
+      "mean_excess": -0.7475,
+      "hit_rate": 0.3359,
+      "stdev": 9.0419,
+      "sharpe_like": 0.0768,
+      "worst": -18.7614,
+      "best": 39.9276,
+      "mean_return_ci95": [
+        -0.2,
+        1.588
+      ],
+      "beats_benchmark": false,
+      "significant": false
+    },
+    "Participation et promotion immobilières": {
+      "label": "Participation et promotion immobilières",
+      "count": 393,
+      "mean_return": 9.0133,
+      "median_return": 1.6749,
+      "mean_excess": 7.5718,
+      "hit_rate": 0.5038,
+      "stdev": 26.4029,
+      "sharpe_like": 0.3414,
+      "worst": -26.9259,
+      "best": 205.7689,
+      "mean_return_ci95": [
+        6.4029,
+        11.6237
+      ],
+      "beats_benchmark": true,
+      "significant": true
+    },
+    "Services de transport": {
+      "label": "Services de transport",
+      "count": 131,
+      "mean_return": 6.068,
+      "median_return": 2.4576,
+      "mean_excess": 4.6265,
+      "hit_rate": 0.542,
+      "stdev": 13.3023,
+      "sharpe_like": 0.4562,
+      "worst": -22.8909,
+      "best": 48.4385,
+      "mean_return_ci95": [
+        3.79,
+        8.346
+      ],
+      "beats_benchmark": true,
+      "significant": true
+    },
+    "Sociétés de placement immobilier": {
+      "label": "Sociétés de placement immobilier",
+      "count": 393,
+      "mean_return": -0.6635,
+      "median_return": -1.1556,
+      "mean_excess": -2.105,
+      "hit_rate": 0.173,
+      "stdev": 6.4828,
+      "sharpe_like": -0.1023,
+      "worst": -24.8095,
+      "best": 37.1579,
+      "mean_return_ci95": [
+        -1.3044,
+        -0.0226
+      ],
+      "beats_benchmark": false,
+      "significant": true
+    },
+    "Séance ouverte": {
+      "label": "Séance ouverte",
+      "count": 131,
+      "mean_return": 2.9936,
+      "median_return": -1.3793,
+      "mean_excess": 1.5521,
+      "hit_rate": 0.374,
+      "stdev": 18.4688,
+      "sharpe_like": 0.1621,
+      "worst": -26.8109,
+      "best": 82.8415,
+      "mean_return_ci95": [
+        -0.1691,
+        6.1563
+      ],
+      "beats_benchmark": true,
+      "significant": false
+    },
+    "Télécommunications": {
+      "label": "Télécommunications",
+      "count": 131,
+      "mean_return": -0.9463,
+      "median_return": -2.0435,
+      "mean_excess": -2.3877,
+      "hit_rate": 0.2519,
+      "stdev": 8.9464,
+      "sharpe_like": -0.1058,
+      "worst": -18.9894,
+      "best": 46.7684,
+      "mean_return_ci95": [
+        -2.4783,
+        0.5857
+      ],
+      "beats_benchmark": false,
+      "significant": false
+    }
+  },
+  "benchmarks": {
+    "medium": {
+      "buy_and_hold_mean": 2.6238,
+      "engine_top_band_mean": 11.6277,
+      "engine_all_mean": 5.4437,
+      "note": "Le benchmark est le proxy équipondéré des valeurs suivies : il n'existe pas de flux MASI officiel (voir audit §4). Un proxy équipondéré surpondère les petites capitalisations par rapport à un indice réel."
+    },
+    "short": {
+      "buy_and_hold_mean": 0.3439,
+      "engine_top_band_mean": 4.348,
+      "engine_all_mean": -0.2047,
+      "note": "Le benchmark est le proxy équipondéré des valeurs suivies : il n'existe pas de flux MASI officiel (voir audit §4). Un proxy équipondéré surpondère les petites capitalisations par rapport à un indice réel."
+    }
+  },
+  "verdict": "Écart établi (intervalles disjoints) sur : medium. À confirmer sur un historique plus long avant d'en tirer une règle d'allocation.",
+  "limitations": [
+    "Historique disponible : 741 séances (~1096 jours), borné par la fenêtre glissante de ~3 ans de l'API source.",
+    "Fenêtres de rendement chevauchantes : les observations ne sont pas indépendantes, donc les intervalles de confiance affichés sont OPTIMISTES (trop étroits). Un écart marqué « établi » doit être lu comme « au mieux établi ».",
+    "Actualités et fondamentaux exclus : ni `news.collected_at` ni `fundamentals` ne portent une date de publication exploitable, donc les inclure ferait fuiter de l'information future. Ce backtest valide le NOYAU TECHNIQUE uniquement.",
+    "Benchmark = proxy équipondéré, pas le MASI officiel.",
+    "Biais du survivant résiduel : un titre radié puis purgé de la base n'a jamais été observé. Les titres présents conservent en revanche leurs observations passées.",
+    "Observations : 6801 — un nombre élevé d'observations chevauchantes ne vaut pas un nombre élevé d'observations indépendantes."
+  ]
+}

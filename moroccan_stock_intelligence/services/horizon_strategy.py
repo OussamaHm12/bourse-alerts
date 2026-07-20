@@ -263,7 +263,16 @@ def _aggregate(
     notes: list[str],
     penalty: float = 0.0,
 ) -> HorizonAssessment:
-    available = {key: value for key, value in components.items() if value is not None}
+    # A component with no declared weight is IGNORED, not fatal. Two reasons:
+    # the ablation study (services/backtest) measures a component's contribution
+    # by removing its weight and re-running, and a future assessor that computes
+    # something it has not yet decided how to weight should degrade rather than
+    # crash the whole report. Previously this raised KeyError.
+    available = {
+        key: value
+        for key, value in components.items()
+        if value is not None and key in weights
+    }
     coverage = sum(weights[key] for key in available)
     if available and coverage > 0:
         score = sum(value * weights[key] for key, value in available.items()) / coverage

@@ -117,6 +117,56 @@ def main(argv: list[str] | None = None) -> None:
     reports_parser.add_argument("--horizon", default="short", choices=["short", "medium", "long"])
     subparsers.add_parser("learn")
     subparsers.add_parser("harvest-knowledge")
+    restore_parser = subparsers.add_parser(
+        "restore-backup", help="replace the live database with a snapshot"
+    )
+    restore_parser.add_argument(
+        "archive",
+        nargs="?",
+        help="path to a .db.gz snapshot; omit to use the newest in BACKUP_DIR",
+    )
+    restore_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip the confirmation prompt (for scripted recovery)",
+    )
+    restore_parser.add_argument(
+        "--no-safety-copy",
+        action="store_true",
+        help="do not keep a copy of the database being replaced (not recommended)",
+    )
+    health_parser = subparsers.add_parser(
+        "data-health", help="which feeds are populated, fresh, and which analysts are blind"
+    )
+    health_parser.add_argument(
+        "--json", action="store_true", help="emit JSON instead of the table"
+    )
+    backtest_parser = subparsers.add_parser(
+        "backtest", help="walk-forward validation of the scoring engine (audit §22 q4)"
+    )
+    backtest_parser.add_argument("--start", default=None, help="YYYY-MM-DD, default = earliest data")
+    backtest_parser.add_argument("--end", default=None, help="YYYY-MM-DD, default = latest data")
+    backtest_parser.add_argument(
+        "--horizons", default="short,medium,long", help="comma-separated: short,medium,long"
+    )
+    backtest_parser.add_argument("--fees", type=float, default=None, help="round-trip fee rate, default settings.trading_fee_rate")
+    backtest_parser.add_argument(
+        "--step", type=int, default=5, help="simulate every Nth séance (5=weekly, 1=exhaustive)"
+    )
+    backtest_parser.add_argument(
+        "--min-history-days", type=int, default=60, help="skip a symbol/date with less collected history than this"
+    )
+    backtest_parser.add_argument("--output", default=None, help="write the JSON report to this path")
+    backtest_parser.add_argument(
+        "--markdown", default=None, help="also write a human-readable Markdown report to this path"
+    )
+    backtest_parser.add_argument(
+        "--ablation", action="store_true", help="also run the per-component ablation study (slow: N+1 backtests)"
+    )
+    backtest_parser.add_argument(
+        "--benchmark", default="proxy", choices=["proxy"],
+        help="'proxy' is the only benchmark available: no official MASI feed is collected (audit §4)",
+    )
     serve_parser = subparsers.add_parser("serve")
     serve_parser.add_argument("--host", default=os.getenv("HOST", "127.0.0.1"))
     # Managed hosts (Railway, Render, Fly) inject the public port via $PORT.
@@ -203,6 +253,40 @@ def main(argv: list[str] | None = None) -> None:
             from moroccan_stock_intelligence.services.research.knowledge import harvest_all
 
             LOG.info("knowledge_harvested new_facts=%s", harvest_all(session))
+        elif command == "restore-backup":
+            run_restore_command(
+                archive=args.archive,
+                assume_yes=args.yes,
+                safety_copy=not args.no_safety_copy,
+            )
+        elif command == "data-health":
+            import json as _json
+
+            from moroccan_stock_intelligence.services import data_health
+
+            report = data_health.check(session)
+            print(
+                _json.dumps(report.as_dict(), indent=2, ensure_ascii=False)
+                if args.json
+                else data_health.render(report)
+            )
+            # Non-zero when a feed is empty or stale, so this can be a cron guard
+            # or a deploy check rather than something someone has to remember to read.
+            if not report.healthy:
+                raise SystemExit(1)
+        elif command == "backtest":
+            run_backtest_command(
+                session,
+                start=args.start,
+                end=args.end,
+                horizons=args.horizons,
+                fees=args.fees,
+                step=args.step,
+                min_history_days=args.min_history_days,
+                output=args.output,
+                markdown=args.markdown,
+                ablation=args.ablation,
+            )
         else:
             parser.error(f"unknown command: {command}")
 
@@ -289,6 +373,133 @@ def run_backup_command(*, ship: bool, keep: int | None) -> None:
     print(render_result(result))
     if result.skipped_reason or not result.ok:
         raise SystemExit(1)
+
+
+def run_restore_command(
+    *, archive: str | None, assume_yes: bool, safety_copy: bool
+) -> None:
+    """Replace the live database with a snapshot, after confirming.
+
+    Interactive by default. This is the one command in the CLI that destroys
+    data, and the audit's point (§15) was that the restore path had never been
+    exercised at all — so it should be hard to run by accident and easy to run
+    correctly under pressure.
+
+    `--yes` exists for scripted recovery, where a prompt would hang a runbook.
+    """
+    from pathlib import Path
+
+    from moroccan_stock_intelligence.services.backup import (
+        latest_archive,
+        render_restore,
+        restore_backup,
+        sqlite_path,
+    )
+
+    source = Path(archive) if archive else latest_archive()
+    if source is None:
+        raise SystemExit(
+            "no snapshot found — pass a path, or check BACKUP_DIR "
+            f"({settings.backup_dir})"
+        )
+
+    target = sqlite_path()
+    if target is None:
+        raise SystemExit(
+            "DATABASE_URL is not SQLite; restoring a PostgreSQL database is a "
+            "pg_restore operation, not this command"
+        )
+
+    if not assume_yes:
+        print(f"Restauration de : {source}")
+        print(f"Vers            : {target}")
+        if target.exists():
+            size_mb = target.stat().st_size / 1_048_576
+            print(f"\nLa base actuelle ({size_mb:.1f} Mo) sera REMPLACÉE.")
+            if safety_copy:
+                print("Une copie horodatée sera conservée à côté avant remplacement.")
+            else:
+                print("AUCUNE copie de sécurité ne sera conservée (--no-safety-copy).")
+        if input("\nTaper 'oui' pour confirmer : ").strip().lower() != "oui":
+            raise SystemExit("Restauration annulée.")
+
+    result = restore_backup(source, safety_copy=safety_copy)
+    print(render_restore(result))
+    if not result.ok:
+        raise SystemExit(1)
+
+
+def run_backtest_command(  # noqa: ANN001, PLR0913
+    session,
+    *,
+    start: str | None,
+    end: str | None,
+    horizons: str,
+    fees: float | None,
+    step: int,
+    min_history_days: int,
+    output: str | None,
+    markdown: str | None,
+    ablation: bool,
+) -> None:
+    """Walk forward through the collected history and report what the scores were worth.
+
+    Prints the Markdown report to stdout so a run is readable without opening a
+    file, and writes the JSON only when asked. The JSON is the artefact worth
+    keeping — it carries every group statistic, not just the ones the summary
+    prints.
+    """
+    import json
+    from datetime import datetime
+    from pathlib import Path
+
+    from moroccan_stock_intelligence.services.backtest import (
+        BacktestConfig,
+        run_ablation,
+        run_backtest,
+        to_markdown,
+    )
+
+    def _parse(value: str | None) -> datetime | None:
+        return datetime.strptime(value, "%Y-%m-%d") if value else None
+
+    requested = tuple(h.strip() for h in horizons.split(",") if h.strip())
+    unknown = [h for h in requested if h not in {"short", "medium", "long"}]
+    if unknown:
+        raise SystemExit(f"unknown horizon(s): {', '.join(unknown)}")
+
+    config = BacktestConfig(
+        start=_parse(start),
+        end=_parse(end),
+        horizons=requested,
+        fee_rate=settings.trading_fee_rate if fees is None else fees,
+        step=step,
+        min_history_days=min_history_days,
+    )
+
+    result = run_backtest(session, config)
+    if ablation:
+        # Reported alongside rather than merged in: the ablation re-runs the whole
+        # simulation per component, so its numbers are only comparable to each
+        # other and to the reference it carries.
+        result["ablation"] = run_ablation(session, config)
+
+    print(to_markdown(result))
+
+    if output:
+        path = Path(output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+        LOG.info("backtest_json_written path=%s", path)
+    if markdown:
+        path = Path(markdown)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(to_markdown(result), encoding="utf-8")
+        LOG.info("backtest_markdown_written path=%s", path)
+
+    # Deliberately exits 0 even when the verdict is "no measurable edge". That is a
+    # finding, not a failure — a non-zero exit would make an honest negative result
+    # look like a broken run.
 
 
 def run_reclassify_news(session, *, apply: bool, batch_size: int) -> None:  # noqa: ANN001
