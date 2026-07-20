@@ -29,18 +29,22 @@ WORKDIR /build
 # survives most rebuilds.
 COPY flutter_app/pubspec.yaml flutter_app/pubspec.lock ./
 
-# Corporate TLS interception (Forcepoint, on the maintainer's network) re-signs
-# pub.dev, which a container does not trust. Mounted as a build secret rather than
-# baked into a layer: a CA committed to an image is shipped to everyone who pulls
-# it. Absent — the normal case for CI and for any machine without such a proxy —
-# this is a no-op.
-#   docker build --secret id=ca,src=/c/tmp/ca/corporate-ca.crt .
-RUN --mount=type=secret,id=ca,required=false \
-    if [ -f /run/secrets/ca ]; then \
-        cp /run/secrets/ca /usr/local/share/ca-certificates/corporate-ca.crt && \
-        update-ca-certificates; \
-    fi && \
-    flutter pub get
+# Optional corporate CA (see ci/certs/README.md).
+#
+# A TLS-inspecting proxy re-signs pub.dev with its own CA, which the host trusts
+# and a container does not. `ci/certs/` is committed empty and gitignored for
+# certificates, so this COPY always succeeds and installs nothing unless someone
+# deliberately dropped a .crt there for a local build.
+#
+# This was a `--mount=type=secret` first, which is the better mechanism — but
+# Railway's builder rejects it ("missing a type=cache argument; other mount types
+# are not supported"), and a build that only works on a laptop is not a build.
+#
+# Verification is never disabled: no --insecure, no ignored certificate errors.
+COPY ci/certs/ /usr/local/share/ca-certificates/
+RUN update-ca-certificates >/dev/null 2>&1 || true
+
+RUN flutter pub get
 
 COPY flutter_app/ ./
 RUN flutter build web --release
@@ -57,17 +61,17 @@ WORKDIR /app
 
 COPY requirements.txt .
 
-# Same proxy story as the Flutter stage, for PyPI. `update-ca-certificates`
-# appends to the system bundle, and PIP_CERT points pip at it — pip does not read
-# the OS trust store on its own, so installing the CA without this line fixes
-# nothing. Still a no-op when no secret is mounted.
-RUN --mount=type=secret,id=ca,required=false \
-    if [ -f /run/secrets/ca ]; then \
-        cp /run/secrets/ca /usr/local/share/ca-certificates/corporate-ca.crt && \
-        update-ca-certificates && \
-        export PIP_CERT=/etc/ssl/certs/ca-certificates.crt; \
-    fi && \
-    pip install --no-cache-dir -r requirements.txt
+# Same optional-CA story as the Flutter stage, for PyPI. Note PIP_CERT: pip does
+# NOT read the OS trust store, so installing a CA without pointing pip at the
+# bundle fixes nothing — a detail that costs an hour to rediscover.
+#
+# `ca-certificates` is not in python:slim, so update-ca-certificates may be
+# absent; the `|| true` keeps the normal (no-proxy) path working either way.
+COPY ci/certs/ /usr/local/share/ca-certificates/
+RUN update-ca-certificates >/dev/null 2>&1 || true
+
+ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 

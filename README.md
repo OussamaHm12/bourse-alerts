@@ -519,15 +519,21 @@ powershell -ExecutionPolicy Bypass -File scripts/export-corporate-ca.ps1
 ```
 
 `scripts/flutter-docker.sh` picks it up from `/c/tmp/ca/corporate-ca.crt`
-automatically, and `docker build` takes it as a secret:
+automatically. `docker build` reads it from `ci/certs/`:
 
 ```bash
-DOCKER_BUILDKIT=1 docker build --secret id=ca,src=/c/tmp/ca/corporate-ca.crt -t bourse .
+cp /c/tmp/ca/corporate-ca.crt ci/certs/     # gitignored; see ci/certs/README.md
+docker build -t bourse .
 ```
 
-The CA is never baked into an image layer, and certificate verification is never
-disabled — the container is taught to trust exactly what its host already trusts.
-On a machine without such a proxy the file is simply absent and everything works.
+A build secret would be the better mechanism, and was used first — but Railway's
+builder supports only `type=cache` mounts and rejects the Dockerfile outright. The
+consequence is worth knowing: a **locally**-built image now contains the
+certificate, where a secret-mounted one did not. Railway builds from git and
+`*.crt` is gitignored, so the deployed image never does.
+
+Certificate verification is never disabled. On a machine without such a proxy the
+directory is empty and everything works unchanged.
 
 ## Docker
 

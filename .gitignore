@@ -25,3 +25,9 @@ migrations/versions/__pycache__/
 .coverage.*
 coverage.xml
 htmlcov/
+
+# Build-time CA certificates (see ci/certs/README.md). The directory is tracked so
+# the Dockerfile's COPY always succeeds; its contents never are — a CA in an image
+# layer is shipped to everyone who pulls it.
+ci/certs/*.crt
+ci/certs/*.pem
