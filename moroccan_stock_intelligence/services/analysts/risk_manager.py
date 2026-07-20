@@ -20,23 +20,68 @@ from moroccan_stock_intelligence.services.research.contracts import (
 )
 from moroccan_stock_intelligence.utils import clamp
 
-VERSION = "1.0"
+VERSION = "2.0"
+
+# --------------------------------------------------------------------------- #
+# The risk formula                                                             #
+# --------------------------------------------------------------------------- #
+#
+# Until v2.0 these dimensions were computed, serialised, drawn as a radar in the
+# app — and then discarded: `overall_risk` was `compute_risk(...) + flag_bonus`,
+# and `_dimensions()` fed nothing (AUDIT_2026-07-18.md §7). The consequence was
+# not cosmetic. `valorisation` is the only place a rich PER is penalised, so a
+# stock at PER 45 and a stock at PER 8 produced the same risk, and the radar the
+# owner was reading had no relationship to the number driving the recommendation.
+#
+# Now one arithmetic produces both:
+#
+#     overall_risk = Σ(dimension × weight)                    # what we measured
+#                  + PRUDENT_UNKNOWN × (1 − coverage)         # what we could not
+#                  + flag_penalty                             # analyst red flags
+#
+# Weights sum to 1.0 and are ordered by how directly each dimension has moved
+# prices on this market: price behaviour first, then the data-confidence term
+# (short history is genuinely the largest source of error here), then the
+# fundamental and event terms, then liquidity and portfolio construction.
+#
+# They are a stated prior, not a fitted result — the backtest ablation
+# (services/backtest) is what can move them, and until it says otherwise this is
+# an informed guess and is labelled as one.
+DIMENSION_WEIGHTS: dict[str, float] = {
+    "technique": 0.30,
+    "historique": 0.20,
+    "valorisation": 0.15,
+    "evenementiel": 0.15,
+    "liquidite": 0.10,
+    "portefeuille": 0.10,
+}
+
+# An unmeasurable dimension is NOT neutral. Everywhere else in this engine an
+# absent input shrinks a score toward 50, because not knowing whether a setup is
+# good means it is probably ordinary. Risk is asymmetric: not knowing whether
+# something is dangerous is itself a reason for caution, so missing coverage
+# pulls upward, not to the middle.
+PRUDENT_UNKNOWN = 58.0
+
+# Analyst red flags add on top of the measured dimensions, capped so a pile of
+# minor flags cannot swamp what was actually measured.
+MAX_FLAG_PENALTY = 22.0
+FLAG_WEIGHT = 6.0
 
 
-def _dimensions(ctx: ResearchContext, reports: dict[str, AnalystReport]) -> tuple[dict[str, float], list[str]]:
+def _dimensions(
+    ctx: ResearchContext, reports: dict[str, AnalystReport], technical_risk: float
+) -> tuple[dict[str, float], list[str]]:
     m = ctx.metric
     dims: dict[str, float] = {}
     missing: list[str] = []
 
-    # Technical.
-    tech = 0.0
-    if m.volatility_30d is not None:
-        tech += clamp((m.volatility_30d - 15) * 1.2, 0, 40)
-    if m.momentum_30d is not None and m.momentum_30d < 0:
-        tech += clamp(-m.momentum_30d * 1.5, 0, 30)
-    if m.drawdown_from_recent_high is not None and m.drawdown_from_recent_high < -10:
-        tech += clamp(-(m.drawdown_from_recent_high + 10) * 1.2, 0, 30)
-    dims["technique"] = round(clamp(tech), 1)
+    # Technical. Takes `horizon_strategy.compute_risk`'s result rather than
+    # recomputing it: this block used to hold a second, near-identical volatility
+    # + momentum + drawdown formula, so the radar's "technique" slice and the
+    # `avoid_score` shown on the Opportunités tab could disagree about the same
+    # stock. One formula, two readers.
+    dims["technique"] = round(clamp(technical_risk), 1)
 
     # Liquidity.
     if m.volume is None:
@@ -80,17 +125,39 @@ def assess(ctx: ResearchContext, reports: dict[str, AnalystReport]) -> RiskRepor
     base_risk, base_reasons = compute_risk(ctx.metric, ctx.news, ctx.history_days)
 
     # Harvest analyst risk flags (extra risk not already in the technical baseline).
-    flag_bonus = 0.0
+    flag_penalty = 0.0
     drivers: list[Statement] = [inference(r, "bearish", 0.5) for r in base_reasons[:3]]
     for name, rep in reports.items():
         for flag in rep.risk_flags:
             if flag.polarity == "bearish":
-                flag_bonus += 6 * flag.weight
+                flag_penalty += FLAG_WEIGHT * flag.weight
                 drivers.append(inference(f"[{name}] {flag.text}", "bearish", flag.weight))
-    flag_bonus = min(flag_bonus, 22.0)
-    overall = round(clamp(base_risk + flag_bonus), 1)
+    flag_penalty = round(min(flag_penalty, MAX_FLAG_PENALTY), 1)
 
-    dims, missing = _dimensions(ctx, reports)
+    dims, missing = _dimensions(ctx, reports, base_risk)
+
+    # The measured part. Each dimension contributes value x weight; a dimension we
+    # could not compute contributes nothing here and instead shows up as missing
+    # coverage below, so it can never be silently read as "risk = 0".
+    contributions = {
+        name: round(value * DIMENSION_WEIGHTS[name], 2)
+        for name, value in dims.items()
+        if name in DIMENSION_WEIGHTS
+    }
+    coverage = round(sum(DIMENSION_WEIGHTS[name] for name in contributions), 3)
+    measured = sum(contributions.values())
+
+    # The unmeasured part, priced prudently rather than assumed benign.
+    unknown_penalty = round(PRUDENT_UNKNOWN * (1.0 - coverage), 2)
+
+    overall = round(clamp(measured + unknown_penalty + flag_penalty), 1)
+
+    if coverage < 0.6:
+        missing.append(
+            f"Seulement {coverage * 100:.0f}% des dimensions de risque sont mesurables : "
+            "le risque non mesuré est valorisé prudemment, pas ignoré."
+        )
+
     measurable = len(dims)
     confidence = round(clamp(35 + measurable / 6 * 40 + min(ctx.history_days / 90, 1.0) * 20), 1)
 
@@ -118,4 +185,10 @@ def assess(ctx: ResearchContext, reports: dict[str, AnalystReport]) -> RiskRepor
         drivers=drivers[:6],
         missing_data=missing,
         version=VERSION,
+        # The breakdown the app draws IS the arithmetic that produced overall_risk.
+        weights={name: DIMENSION_WEIGHTS[name] for name in contributions},
+        contributions=contributions,
+        coverage=coverage,
+        flag_penalty=flag_penalty,
+        unknown_penalty=unknown_penalty,
     )

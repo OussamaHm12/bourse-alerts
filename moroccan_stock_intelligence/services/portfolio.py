@@ -34,14 +34,18 @@ class HoldingEvaluation:
     buy_price: float
     current_price: float | None
     daily_variation: float | None
-    cost_basis: float
+    cost_basis: float  # quantity x buy_price, commission excluded
     market_value: float | None
     gross_pl: float | None
-    fees: float | None
+    fees: float | None  # entry + exit commission
     net_pl: float | None
-    net_pl_pct: float | None
+    net_pl_pct: float | None  # net P/L over (cost_basis + entry_fees)
     advice: str  # "SELL" | "HOLD"
     advice_reason: str
+    # Broken out so the fee arithmetic is auditable on screen rather than folded
+    # into one total. Defaulted, so constructions elsewhere keep working.
+    entry_fees: float | None = None
+    exit_fees: float | None = None
 
 
 def load_portfolio(path: Path | None = None) -> Portfolio:
@@ -98,11 +102,26 @@ def evaluate_holding(
             advice_reason="Pas de cours disponible pour le moment",
         )
 
+    # A round trip costs a commission twice: once buying, once selling. Only the
+    # sell side was charged (AUDIT_2026-07-18.md §8), so every P/L was optimistic
+    # by roughly `fee_rate` of the position — enough, at the default 0.5%, to show
+    # a position clearing the +15% take-profit threshold when it had not.
+    #
+    # `cost_basis` stays the pure acquisition cost, because it is what the app
+    # displays as "what you paid for the shares"; the entry commission is a
+    # separate, named term so the arithmetic can be read on screen rather than
+    # hidden inside a total.
     market_value = price * holding.quantity
+    entry_fees = cost_basis * fee_rate
+    exit_fees = market_value * fee_rate
+    fees = entry_fees + exit_fees
     gross_pl = market_value - cost_basis
-    fees = market_value * fee_rate
     net_pl = gross_pl - fees
-    net_pl_pct = (net_pl / cost_basis * 100) if cost_basis else None
+    # Measured against what the position actually consumed — cost plus the
+    # commission paid to open it. Dividing by cost_basis alone would understate the
+    # capital at risk and overstate the return.
+    invested = cost_basis + entry_fees
+    net_pl_pct = (net_pl / invested * 100) if invested else None
     advice, reason = _advise(metric, score, net_pl_pct)
 
     return HoldingEvaluation(
@@ -120,6 +139,8 @@ def evaluate_holding(
         net_pl_pct=net_pl_pct,
         advice=advice,
         advice_reason=reason,
+        entry_fees=entry_fees,
+        exit_fees=exit_fees,
     )
 
 

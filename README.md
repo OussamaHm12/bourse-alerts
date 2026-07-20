@@ -4,18 +4,35 @@ Production-oriented Python platform for collecting Casablanca Stock Exchange mar
 
 This project is for market intelligence and notifications only. It does not place trades, route orders, or provide investment advice.
 
+### What this is, precisely
+
+A **deterministic quantitative engine**, a **rule-based multi-agent expert system**,
+and **statistical calibration**. In that order of importance.
+
+It is *not* self-learning AI, and the code says so where it would be tempting to
+claim otherwise (`services/research/learning.py`: "Deliberately NOT machine
+learning"). There is no trained model and no learned inference anywhere. The ten
+"analysts" are Python functions. An optional LLM can re-word a finished report and
+is disabled by default; it cannot change a number, a score or a recommendation,
+and the SDK is not even installed.
+
+The single-owner design is deliberate, not an unfinished feature: the portfolio,
+favorites and push subscriptions all assume one person, and multi-user support
+would be a schema change rather than a flag.
+
 ## What It Does
 
 - Discovers listed equities from the official Casablanca Bourse actions page.
 - Stores every collected snapshot indefinitely in SQL tables.
 - Uses SQLite locally and any SQLAlchemy-supported PostgreSQL URL in production.
-- Computes momentum, moving averages, volatility, volume anomalies, relative performance, support/resistance distance, drawdowns, and 52-week proximity.
-- Scores opportunities from 0 to 100 with component explanations.
+- Computes momentum, moving averages, volatility, volume anomalies, relative performance, support/resistance distance, drawdowns, and 52-week proximity. A windowed indicator is reported only when it has the history its name implies — a MA200 needs 200 séances, not "whatever exists" — so a missing one lowers coverage instead of quietly asserting a number.
+- Scores opportunities from 0 to 100 with component explanations, a coverage figure and a confidence.
 - Collects official Casablanca Bourse announcements and links them to known symbols when possible.
-- Sends two full Telegram digests per trading day, at 10:00 and 16:00 Morocco time:
-  - your portfolio: current value, net profit/loss after fees, and a SELL/HOLD advice per position
+- **Requires a password.** Every route except the healthcheck and the login endpoints needs a session (`AUTH_PASSWORD`). See [Authentication](#authentication).
+- Sends two full Telegram digests per trading day, at **09:00 and 17:00** Morocco time:
+  - your portfolio: current value, net profit/loss after **both** commissions (buy and sell), and a SELL/HOLD advice per position
   - a market recap: top movers, unusual volume, and the BUY-score opportunities (top pick detailed + Top 5 with score >= 60)
-- Sends a lightweight intraday update every 2 hours during the session (12:00 and 14:00 Morocco):
+- Sends a lightweight intraday update during the session (**11:00, 13:00 and 15:00** Morocco):
   portfolio P/L, opportunities scoring >= 60, and the day's movers.
 - Sends an immediate urgent alert only when a stock you actually own crashes -5% or more intraday.
 - Tracks your real holdings (quantity + buy price) and tells you the net gain if you sell now.
@@ -141,6 +158,111 @@ MIN_OPPORTUNITY_SCORE=80
 
 Copy `.env.example` to `.env` for local Docker or shell use.
 
+## Authentication
+
+The platform holds real holdings, buy prices and P/L. **Every route is private by
+default** — an allowlist in [services/auth.py](moroccan_stock_intelligence/services/auth.py)
+names the only four exceptions (`/api/health`, `/api/auth/login`, `/api/auth/logout`,
+`/api/auth/status` + its `/session` alias). A route added next month is private
+without anyone remembering to protect it; you have to *un*-protect it on purpose.
+
+```bash
+AUTH_PASSWORD=une-phrase-de-passe-longue   # >= 12 characters, no default
+AUTH_SESSION_DAYS=30
+AUTH_COOKIE_SECURE=true                    # false only for local http testing
+AUTH_MAX_ATTEMPTS=5
+AUTH_LOCKOUT_SECONDS=300
+```
+
+**There is no default password, and that is deliberate.** With `AUTH_PASSWORD`
+unset or shorter than 12 characters, protected routes answer **503**, not 200 — an
+auth layer that disables itself on a missing environment variable would silently
+reintroduce the exact problem it exists to fix. `/api/health` keeps answering so
+the platform can still see the container.
+
+- The session is a signed, stateless cookie (`HttpOnly`, `Secure`, `SameSite=Strict`).
+  No session table, no Redis.
+- The signing key is derived from `AUTH_PASSWORD`, so **changing it invalidates
+  every live session** — rotation that left old cookies working would not be
+  rotation.
+- The cookie is `HttpOnly`, so the app's own JavaScript cannot read it either.
+  Nothing secret is ever compiled into the frontend bundle.
+
+Rate limiting sits in front of the expensive routes (`/api/refresh`,
+`/api/run-now`, `/api/push/test`, `/api/report/{symbol}?fresh=true`). It is a
+fixed-window counter held in memory — per container, lost on restart. Both limits
+are real and deliberate: this is a cost guard, and the security boundary is the
+session cookie, not the counter.
+
+## Backtest
+
+Answers the only question that matters about a scoring engine: *do the scores
+predict anything?*
+
+```bash
+python -m moroccan_stock_intelligence.cli backtest \
+  --horizons short,medium \
+  --step 10 \
+  --output reports/backtest-2026-07.json
+```
+
+It walks forward through the collected history: pick a past date, rebuild the
+metrics from **only** the rows visible on that date, score, record the
+recommendation, then measure what actually happened 10/60/180 séances later
+against an equal-weighted benchmark.
+
+**What it found** on 53 symbols × 741 séances (`reports/backtest-2026-07.json`):
+
+| Horizon | Score band | N | Mean return (net) | vs benchmark |
+|---|---|---:|---:|---:|
+| medium | 0-45 | 1247 | +2.75% | +0.29% |
+| medium | 45-55 | 488 | +2.87% | +0.49% |
+| medium | 55-70 | 770 | +5.30% | +2.74% |
+| medium | **70-100** | 763 | **+11.63%** | **+8.52%** |
+| short | 70-100 | 45 | +4.35% | +3.66% |
+
+The medium horizon is monotonic across bands and its top band's confidence
+interval is disjoint from the neutral band's. The short horizon is monotonic too,
+but its top band has 45 observations and an interval spanning zero — **nothing is
+established there.**
+
+The ablation (`reports/ablation-2026-07.json`) is more useful still:
+
+| Variant | Spread 70+ vs 45-55 | Δ vs reference |
+|---|---:|---:|
+| reference | 6.13 | — |
+| without `tendance` | −0.13 | **−6.26** |
+| without `secteur` | 3.43 | −2.70 |
+| without `volatilite` | 4.81 | −1.32 |
+| without `actualites` | 6.25 | +0.12 |
+| without `moyennes_mobiles` | 12.03 | **+5.90** |
+
+Read plainly: **trend carries essentially all of the signal**, news contributes
+nothing measurable, and the moving-average component — 25% of the medium score —
+appears to be working *against* it.
+
+**Do not over-read any of this.** Forward windows overlap, so the observations are
+correlated and the reported intervals are optimistic; the sample covers roughly
+three years of a broadly rising market, so a high-scoring band may be capturing
+beta rather than skill; the benchmark is the equal-weighted proxy, not a real
+MASI; and news and fundamentals are excluded entirely because neither carries a
+usable publication date, which means **this validates the technical core only**.
+The module states all of this in its own output.
+
+## Data health
+
+```bash
+python -m moroccan_stock_intelligence.cli data-health   # exits 1 if a feed is empty or stale
+```
+
+Reports rows, freshness and coverage per feed, judged against each feed's own
+cadence — and names the analysts that are running blind rather than leaving you to
+infer it from a report full of "données non collectées". Also served, privately,
+at `GET /api/admin/system-status`.
+
+This exists because a scraper that returns 200 with an empty list looks exactly
+like one that works.
+
 ## Telegram Setup
 
 1. Create a bot:
@@ -190,6 +312,22 @@ python -m moroccan_stock_intelligence.cli run-once
   pushes Telegram messages, so it is safe for ad-hoc local runs.
 - `send-alerts`: manual retry for alerts whose Telegram send failed (they stay `sent=0`). Nothing
   schedules it; live alerts send immediately and mark themselves sent.
+
+Diagnostics and maintenance:
+
+```bash
+python -m moroccan_stock_intelligence.cli data-health          # which feeds are blind or stale
+python -m moroccan_stock_intelligence.cli backtest --help      # walk-forward validation
+python -m moroccan_stock_intelligence.cli backup               # snapshot + ship off-host
+python -m moroccan_stock_intelligence.cli restore-backup       # recover from a snapshot
+python -m moroccan_stock_intelligence.cli migrate --to head    # apply pending migrations
+python -m moroccan_stock_intelligence.cli migrate-status
+python -m moroccan_stock_intelligence.cli reclassify-news      # dry run by default
+python -m moroccan_stock_intelligence.cli backfill-history     # seed ~3y, self-healing
+```
+
+`data-health` and `backup` both exit non-zero on failure, so either can gate a
+deployment or a destructive operation.
 
 ## Notifications: one source of truth
 
@@ -249,7 +387,27 @@ python -m moroccan_stock_intelligence.cli backup --no-ship  # snapshot only
 Exits non-zero if the snapshot cannot be verified, so it is safe to use as a gate:
 `cli backup && cli reclassify-news --apply`.
 
-To restore: download the archive, `gunzip` it, and put it back at `data/market.db`.
+### Restoring
+
+```bash
+python -m moroccan_stock_intelligence.cli restore-backup                     # newest snapshot
+python -m moroccan_stock_intelligence.cli restore-backup path/to/snap.db.gz
+python -m moroccan_stock_intelligence.cli restore-backup --yes               # scripted recovery
+```
+
+The order of operations is the point, and it is what the tests in
+[tests/test_restore.py](tests/test_restore.py) pin:
+
+1. decompress to a staging file;
+2. **integrity-check that copy** — a corrupt archive is discovered while the live
+   database is still the live database;
+3. copy the current database aside, timestamped (a restore is itself a change you
+   can regret);
+4. `os.replace` — atomic, so there is no instant where the database is missing or
+   half-written.
+
+Restoring by hand still works (`gunzip` the archive over `data/market.db`), but it
+skips every one of those steps.
 
 ## Mobile App (PWA)
 
@@ -330,6 +488,46 @@ docker compose up -d webapp   # serves on :8000 behind your HTTPS reverse proxy
   HTTPS, or expose it through a **Cloudflare Tunnel**.
 
 Keep `ENABLE_SCHEDULER=true` on exactly one instance so the digests fire once.
+
+## Building the frontend
+
+**The bundle is compiled from source by the Docker build.** `webapp_flutter/` is
+what the server mounts; `flutter_app/lib/` is the source. Those two drifting apart
+is how you ship a backend that requires a login alongside a frontend that has no
+login screen — so the image now builds the bundle in a stage of its own, and the
+committed copy is a fallback that CI keeps honest.
+
+To rebuild it locally (needed whenever you change `flutter_app/lib/` and want the
+committed bundle to match):
+
+```bash
+scripts/flutter-docker.sh analyze --no-fatal-infos
+scripts/flutter-docker.sh test
+scripts/flutter-docker.sh build web --release
+
+rm -rf webapp_flutter && cp -r flutter_app/build/web webapp_flutter
+scripts/verify-bundle.sh          # rebuilds and compares hashes
+```
+
+No local Flutter SDK is required — the script runs `ghcr.io/cirruslabs/flutter:stable`.
+
+**Behind a TLS-inspecting proxy** (the maintainer's network re-signs certificates),
+containers cannot reach pub.dev or PyPI. Export the corporate CA once:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/export-corporate-ca.ps1
+```
+
+`scripts/flutter-docker.sh` picks it up from `/c/tmp/ca/corporate-ca.crt`
+automatically, and `docker build` takes it as a secret:
+
+```bash
+DOCKER_BUILDKIT=1 docker build --secret id=ca,src=/c/tmp/ca/corporate-ca.crt -t bourse .
+```
+
+The CA is never baked into an image layer, and certificate verification is never
+disabled — the container is taught to trust exactly what its host already trusts.
+On a machine without such a proxy the file is simply absent and everything works.
 
 ## Docker
 
@@ -423,18 +621,47 @@ once the database has collected enough history.
 
 ## Scoring Model
 
-BUY score weighting:
+> The weighting listed here previously (25% momentum / 20% volume / 20% valuation
+> / …) described a second, independent engine that no longer exists. It was merged
+> into the horizon kernel in `6a208b2` after a comparison found the two disagreed
+> on 71 of 80 symbols.
 
-- 25% momentum
-- 20% volume anomaly
-- 20% valuation opportunity
-- 15% support proximity
-- 10% sector strength
-- 10% recent news sentiment
+There is **one** scoring kernel, [horizon_strategy.py](moroccan_stock_intelligence/services/horizon_strategy.py),
+producing three scores per stock. `buy_score` on the Opportunités tab is the
+short-horizon score; `avoid_score` is the risk score.
 
-The platform also emits WATCH and AVOID scores. Every score includes reasons, risks, and component values.
+| Horizon | Weights |
+|---|---|
+| **short** (days–2 weeks) | 30% momentum (1j/5j) · 20% volume · 20% breakout · 15% support · 15% news |
+| **medium** (1–3 months) | 35% trend (30j/90j) · 25% moving averages · 15% sector · 15% inverse volatility · 10% news |
+| **long** (6 months+) | 25% long trend · 20% stability · 15% 52-week structure · 10% sector · 10% events · **20% fundamentals** |
 
-Early runs have limited history, so long-window metrics such as MA200 and 52-week high/low become more meaningful as the database grows.
+Three properties matter more than the weights:
+
+- **Only available components are scored.** A missing metric lowers *coverage* —
+  it is never replaced by a neutral 50.
+- **Low coverage shrinks the score toward neutral**: `50 + (score−50) × min(1, coverage/0.8)`.
+  It is structurally impossible to display a strong conviction built on thin data.
+- **Confidence measures data, not correctness**: 50% coverage + 30% history depth
+  + 20% signal agreement, capped at 35 when coverage is under half. It is *not* a
+  probability that the call is right, and since the learning-semantics fix it is
+  no longer treated as one.
+
+One recommendation policy decides every verdict
+([recommendation_policy.py](moroccan_stock_intelligence/services/recommendation_policy.py)),
+so the Opportunités tab and the research report cannot disagree. Where they *look*
+like they disagree — "Acheter" on one screen, "Conserver" on another — it is
+because they answer different questions, and the API now returns the `perspective`
+field saying which.
+
+**Empirically**, the medium-horizon score ranks stocks in a way that correlated
+with subsequent returns on the available history, the short horizon does not, and
+the moving-average component may be counter-productive. See [Backtest](#backtest)
+— including its limitations, which are substantial.
+
+Windowed indicators are reported only with the history their name implies, so on a
+newly listed symbol MA200 and the 52-week range are *absent* rather than
+approximated from six weeks of data.
 
 ## Testing
 
@@ -450,12 +677,37 @@ Install pre-commit hooks:
 pre-commit install
 ```
 
+Frontend (no local Flutter SDK required):
+
+```bash
+scripts/flutter-docker.sh analyze --no-fatal-infos
+scripts/flutter-docker.sh test
+```
+
+**644 Python tests + 23 Flutter widget tests, 79% line coverage** (measured with
+`pytest-cov`, not estimated — and not the same thing as a pass rate).
+
 Testing strategy:
 
 - Parser tests for Moroccan number formats and Casablanca Bourse table extraction.
 - Scoring tests for bounded outputs and explanations.
+- **Boundary matrices** wherever a threshold ladder decides something
+  (44/45, 54/55, 69/70, confidence 49/50, risk 64/65): off-by-one at a comparison
+  operator is that code's failure mode and is invisible to review.
+- **Anti-leakage tests** for the backtest. Two symbols with identical pasts and
+  different futures must score identically before the divergence *and* differently
+  after it — a leak detector that cannot see the signal it hunts for detects
+  nothing.
+- **Recovery tests** that destroy a database and restore it, comparing row by row.
+  A backup nobody has restored is an assumption.
+- The suite blocks outbound network calls (`conftest.no_outbound_network`); an
+  earlier version scraped casablanca-bourse.com for real on every run.
 - Add regression fixtures whenever a source changes HTML shape.
 - Add integration tests using saved HTML fixtures before relying on new data sources.
+
+Not covered, stated plainly: `synthesis/claude.py` (0% — the LLM path is disabled
+and untested), `collectors/issuers.py` and `collectors/company.py` (0% — they feed
+two analysts and would fail silently on a site redesign).
 
 ## Refresh on open
 
@@ -498,12 +750,34 @@ collection instant):
 
 ## Future Roadmap
 
-- Alembic migrations.
-- PostgreSQL production profile with `psycopg`.
+Shipped since this list was written (kept visible so the roadmap is not read as a
+list of things that are still missing):
+
+- ~~Alembic migrations.~~ — `migrations/`, applied with `cli migrate`.
+- ~~Backtesting module for signal quality.~~ — `cli backtest`, see [Backtest](#backtest).
+- ~~Fundamentals and valuation ratios where public data is available.~~ — the six
+  published ratios are collected and now carry 20% of the long-horizon score.
+- ~~Role-based dashboard auth.~~ — single-owner password auth; role-based access
+  would need a real user model (see below).
+
+Still open, in rough order of value:
+
+- **Sector-relative fundamentals.** The valuation bands are absolute today. A PER
+  of 20 means different things for a bank and a telecom, and doing it properly
+  needs the cross-section computed in `gather()` rather than per symbol.
+- **PDF text extraction for official notices.** Only the notice *title* is read;
+  the linked PDF is never downloaded. The backtest's ablation suggests news
+  currently contributes nothing measurable, so this is the most likely way to
+  make it contribute something.
+- **A real MASI/MSI20 feed.** The index is an equal-weighted proxy of tracked
+  constituents, which over-weights small caps against a real capitalisation-weighted
+  index. Labelled as a proxy everywhere it appears.
+- **Re-examine the moving-average component.** The ablation found that removing it
+  *improved* the medium-horizon spread by 5.9 points on the available history —
+  see [Backtest](#backtest). One sample, overlapping windows, one market regime,
+  so this is a lead to investigate rather than a conclusion.
+- PostgreSQL production profile with `psycopg` (the path is proven by test).
 - More news sources and RSS/media adapters.
-- PDF text extraction for official notices.
-- Sector benchmark indices.
-- Fundamentals and valuation ratios where public data is available.
-- Backtesting module for signal quality.
 - Telegram command bot for on-demand stock lookup.
-- Role-based dashboard auth for hosted deployment.
+- Multi-user support — a genuine schema change, not a feature flag: portfolio,
+  favorites and push subscriptions all assume a single owner.

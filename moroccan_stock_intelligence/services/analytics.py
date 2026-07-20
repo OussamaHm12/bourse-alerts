@@ -6,9 +6,70 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from moroccan_stock_intelligence.config import settings
 from moroccan_stock_intelligence.utils import pct_distance
 
 _NS_PER_DAY = 86_400_000_000_000
+
+# --------------------------------------------------------------------------- #
+# How much history a windowed statistic needs before it may claim its own name  #
+# --------------------------------------------------------------------------- #
+#
+# `prices.tail(200).mean()` on a symbol with ten séances returns the mean of ten
+# séances — and every consumer then reads it as a 200-day moving average. The
+# audit (AUDIT_2026-07-18.md §6) rated this P1, and the reason is not that the
+# number is imprecise: it is that this single field bypasses the coverage
+# mechanism the rest of the engine is built on.
+#
+# Everywhere else, a metric that cannot be computed is None, which lowers the
+# horizon's coverage, shrinks its score toward neutral and caps its confidence.
+# A moving average that is silently always available tells that machinery it has
+# data it does not have — so a 10-séance symbol reported a trend, a MA50 crossing
+# and a market-wide breadth contribution, all with full confidence.
+#
+# So: a windowed statistic returns None unless it has enough observations. The
+# thresholds below are minimums, not targets.
+#
+# `ma_min_coverage` (default 1.0 = strict) is the only tolerance, and it is
+# deliberately opt-in: an operator who accepts a MA200 built from 180 séances can
+# say so, and the fact appears in `evidence` on the technical analyst's
+# statements. It can never turn 10 séances into a MA200 — MIN_ABSOLUTE below is
+# a floor no coverage setting can go under.
+MA_WINDOWS = {"ma20": 20, "ma50": 50, "ma200": 200}
+
+# Annualised volatility from two returns is not a 30-day volatility, it is noise
+# with a confident label. 20 returns is two thirds of the window: enough for the
+# standard deviation to mean something, lenient enough to survive holidays.
+VOLATILITY_MIN_OBSERVATIONS = 21  # 21 prices -> 20 returns
+
+# Support/resistance is a *recent range*. It degrades gracefully with fewer
+# points, but three points describe a line, not a range.
+RANGE_MIN_OBSERVATIONS = 20
+
+# A "52-week high" drawn from six weeks of data is a different statistic wearing
+# the same label, and it feeds `structure_52s` in the long-horizon score.
+WEEK52_MIN_OBSERVATIONS = 120
+
+# No coverage setting may reduce a window below this fraction of its nominal
+# length. Without it, `MA_MIN_COVERAGE=0.05` would resurrect the exact bug.
+MIN_ABSOLUTE_COVERAGE = 0.75
+
+
+def _required(window: int) -> int:
+    """Observations a window needs, after applying the configured tolerance."""
+    coverage = max(MIN_ABSOLUTE_COVERAGE, min(1.0, settings.ma_min_coverage))
+    return max(2, int(round(window * coverage)))
+
+
+def _windowed(series: pd.Series, window: int, reducer: str) -> float | None:
+    """`series.tail(window).<reducer>()`, or None when the history is too short.
+
+    One helper for every windowed statistic so a new one cannot be added without
+    inheriting the guard.
+    """
+    if len(series) < _required(window):
+        return None
+    return _float_or_none(getattr(series.tail(window), reducer)())
 
 
 @dataclass(frozen=True)
@@ -98,10 +159,14 @@ def compute_metrics(price_frame: pd.DataFrame) -> list[MetricSet]:
             sector_momentum.setdefault(sector, []).append(momentum_30d)  # type: ignore[union-attr]
 
         price = _float_or_none(latest.get("current_price"))
-        support = _float_or_none(prices.tail(90).min())
-        resistance = _float_or_none(prices.tail(90).max())
-        high_52 = _float_or_none(prices.tail(365).max())
-        low_52 = _float_or_none(prices.tail(365).min())
+        # Each of these is None rather than a short-history impostor — see the
+        # threshold block at the top of the module for why that matters.
+        has_range = len(prices) >= RANGE_MIN_OBSERVATIONS
+        support = _float_or_none(prices.tail(90).min()) if has_range else None
+        resistance = _float_or_none(prices.tail(90).max()) if has_range else None
+        has_year = len(prices) >= WEEK52_MIN_OBSERVATIONS
+        high_52 = _float_or_none(prices.tail(365).max()) if has_year else None
+        low_52 = _float_or_none(prices.tail(365).min()) if has_year else None
         volume_avg = volumes.tail(20).replace(0, math.nan).mean()
         latest_volume = _float_or_none(latest.get("volume"))
 
@@ -117,10 +182,14 @@ def compute_metrics(price_frame: pd.DataFrame) -> list[MetricSet]:
             momentum_5d=_momentum(group, 5),
             momentum_30d=momentum_30d,
             momentum_90d=_momentum(group, 90),
-            ma20=_float_or_none(prices.tail(20).mean()),
-            ma50=_float_or_none(prices.tail(50).mean()),
-            ma200=_float_or_none(prices.tail(200).mean()),
-            volatility_30d=_float_or_none(returns.tail(30).std() * math.sqrt(252) * 100),
+            ma20=_windowed(prices, MA_WINDOWS["ma20"], "mean"),
+            ma50=_windowed(prices, MA_WINDOWS["ma50"], "mean"),
+            ma200=_windowed(prices, MA_WINDOWS["ma200"], "mean"),
+            volatility_30d=(
+                _float_or_none(returns.tail(30).std() * math.sqrt(252) * 100)
+                if len(prices) >= VOLATILITY_MIN_OBSERVATIONS
+                else None
+            ),
             volume_anomaly=_float_or_none(latest_volume / volume_avg)
             if latest_volume is not None and volume_avg and not math.isnan(volume_avg)
             else None,

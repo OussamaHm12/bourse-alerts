@@ -56,17 +56,22 @@ from moroccan_stock_intelligence.services.horizon_strategy import (
     compute_confidence,
     compute_risk,
 )
+from moroccan_stock_intelligence.services.recommendation_policy import (
+    THRESHOLDS,
+    NO_POSITION,
+    decide,
+)
 from moroccan_stock_intelligence.utils import clamp
 
-# The CIO's thresholds (analysts/cio.py `_recommend`), so one stock cannot be an
-# opportunity on one screen and a risk on another. Kept here, next to the labels
-# they produce, and asserted equal to the CIO's by test.
-STRONG_SCORE = 70.0
-STRONG_CONFIDENCE = 50.0
-WATCH_SCORE = 55.0
-WEAK_SCORE = 45.0
-AVOID_RISK = 60.0
-RISKY_RISK = 65.0
+# Re-exported from the single policy so existing importers keep resolving. These
+# used to be a third independent copy of the thresholds; they are now views onto
+# the same object, which is why they can no longer drift.
+STRONG_SCORE = THRESHOLDS.strong_score
+STRONG_CONFIDENCE = THRESHOLDS.strong_confidence
+WATCH_SCORE = THRESHOLDS.watch_score
+WEAK_SCORE = THRESHOLDS.weak_score
+AVOID_RISK = THRESHOLDS.avoid_risk
+RISKY_RISK = THRESHOLDS.risky_risk
 
 
 @dataclass(frozen=True)
@@ -129,27 +134,48 @@ def score_opportunity(
     )
 
 
+# The tab's short vocabulary, mapped from the policy's codes. The tab answers
+# "is this an opportunity?", so it always asks from the MARKET perspective — it
+# has no portfolio context and must not pretend to.
+#
+# The tab carries one label the policy has no code for: NEUTRE. Centralising the
+# rule surfaced that the two vocabularies had genuinely disagreed — for a score of
+# 50 the CIO said WATCH while this tab said NEUTRE, and nobody had noticed because
+# the two were never compared.
+#
+# Resolved as a DISPLAY nuance, not a second decision: the recommendation is WATCH
+# either way, and the tab distinguishes "worth watching" (>= watch_score) from
+# "nothing is happening here" (the 45-55 dead band) purely in wording. The
+# underlying code, which is what gets stored, notified on and learned from, stays
+# single-valued.
+_MARKET_LABELS = {
+    "STRONG_OPPORTUNITY": "ACHETER",
+    "WATCH": "SURVEILLER",
+    "AVOID": "ÉVITER",
+    "RISKY": "ÉVITER",
+}
+
+
 def classify_label(score: ScoreResult | None) -> str:
-    """One actionable label (French), on the CIO's thresholds.
+    """One actionable label (French) for the Opportunités tab.
 
-    Lives here rather than in `views` because the API, the digest and the favorites
-    service all need the same label, and none of them should import a view layer.
+    Delegates to `recommendation_policy.decide` rather than re-deriving the rule:
+    this function used to be the third copy of the same thresholds, and a change to
+    one copy would have made the tab and the report disagree about the same stock.
 
-    This deliberately mirrors `cio._recommend`'s non-held branch. It cannot be the
-    whole rule — the CIO also knows whether the stock is held, which turns a verdict
-    into HOLD or TAKE_PROFIT — but on the question this label answers ("is this an
-    opportunity?"), the two must never disagree.
+    Always evaluated as a NON-holder. The tab lists opportunities to buy, so
+    "ACHETER" here means "worth buying", and the per-stock screens — which do know
+    your positions — answer the different question of what to do with one you own.
     """
     if score is None:
         return "NEUTRE"
-    if score.avoid_score >= RISKY_RISK and score.buy_score < STRONG_SCORE:
-        return "ÉVITER"
-    if score.avoid_score >= AVOID_RISK:
-        return "ÉVITER"
-    if score.buy_score >= STRONG_SCORE and score.confidence >= STRONG_CONFIDENCE:
-        return "ACHETER"
-    if score.buy_score >= WATCH_SCORE:
-        return "SURVEILLER"
-    if score.buy_score < WEAK_SCORE:
-        return "ÉVITER"
-    return "NEUTRE"
+    decision = decide(
+        score=score.buy_score,
+        risk=score.avoid_score,
+        confidence=score.confidence,
+        avoid_score=score.avoid_score,
+        position=NO_POSITION,
+    )
+    if decision.recommendation == "WATCH" and score.buy_score < WATCH_SCORE:
+        return "NEUTRE"  # the dead band — see _MARKET_LABELS
+    return _MARKET_LABELS.get(decision.recommendation, "NEUTRE")

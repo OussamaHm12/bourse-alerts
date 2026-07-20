@@ -30,6 +30,10 @@ from sqlalchemy import inspect, text
 
 from moroccan_stock_intelligence.db import BASELINE_REVISION, get_engine, init_db
 
+# Downgrade targets are named explicitly rather than as "-1": relative steps
+# silently retarget whenever a migration is added, so these tests would start
+# asserting the wrong revision's effect while still passing on the day it lands.
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -142,7 +146,7 @@ def test_downgrade_restores_the_schema(tmp_path, alembic_config):
     command.upgrade(config, "head")
     assert "signals" not in _tables(db)
 
-    command.downgrade(config, "-1")
+    command.downgrade(config, BASELINE_REVISION)
 
     assert "signals" in _tables(db), "downgrade must restore the shape"
     conn = sqlite3.connect(db)
@@ -164,7 +168,7 @@ def test_the_cycle_is_repeatable(tmp_path, alembic_config):
     for _ in range(3):
         command.upgrade(config, "head")
         assert "signals" not in _tables(db)
-        command.downgrade(config, "-1")
+        command.downgrade(config, BASELINE_REVISION)
         assert "signals" in _tables(db)
 
     command.upgrade(config, "head")

@@ -36,6 +36,19 @@ os.environ.pop("VAPID_PRIVATE_KEY", None)
 # Holdings would otherwise be read from the developer's private portfolio file.
 os.environ["PORTFOLIO_JSON"] = '{"fee_rate": 0.005, "holdings": []}'
 
+# --- Authentication -------------------------------------------------------- #
+# The API is deny-by-default (services/auth.py), so without a configured secret
+# every protected route answers 503 and the whole API suite fails on a
+# misconfiguration rather than on the behaviour it means to test.
+#
+# Set here rather than per-test for the same reason as DATABASE_URL: `Settings`
+# is a frozen dataclass whose defaults are evaluated at class creation, so the
+# value has to exist before the first import of `config`.
+TEST_AUTH_PASSWORD = "test-owner-password"  # >= MIN_PASSWORD_LENGTH
+os.environ["AUTH_PASSWORD"] = TEST_AUTH_PASSWORD
+# TestClient speaks plain http; a Secure cookie would never be sent back.
+os.environ["AUTH_COOKIE_SECURE"] = "false"
+
 
 @pytest.fixture(autouse=True)
 def clear_market_state_cache():
@@ -51,6 +64,23 @@ def clear_market_state_cache():
     market_state.invalidate()
     yield
     market_state.invalidate()
+
+
+@pytest.fixture(autouse=True)
+def clear_rate_limiter():
+    """The limiter counts per (bucket, client) in a module global.
+
+    Every test shares the TestClient's "testclient" peer address, so without this
+    the budgets are consumed cumulatively across the whole session and a test late
+    in the file fails with a 429 that has nothing to do with what it asserts —
+    worse, it depends on execution order. Cleared around each test so the budget
+    is only ever spent by the test currently asserting on it.
+    """
+    from moroccan_stock_intelligence.services import ratelimit
+
+    ratelimit.reset()
+    yield
+    ratelimit.reset()
 
 
 @pytest.fixture(autouse=True)

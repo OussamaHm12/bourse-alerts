@@ -8,7 +8,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from py_vapid import Vapid01
 from pywebpush import WebPushException, webpush
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from moroccan_stock_intelligence.config import settings
@@ -29,20 +29,42 @@ def generate_vapid_keys() -> tuple[str, str]:
     return public, private
 
 
+# One owner, a handful of devices. The ceiling exists so a caller cannot grow the
+# table without bound; re-subscribing from a known device updates in place and
+# never counts against it, so a real user cannot hit this.
+MAX_SUBSCRIPTIONS = 20
+
+
 def save_subscription(session: Session, subscription: dict) -> None:
+    """Store or refresh one device's push subscription.
+
+    The payload is validated at the API edge (`api_models.PushSubscriptionIn`), so
+    the required fields are known present here. The checks below are the ones the
+    edge cannot make because they involve the database: idempotency on endpoint,
+    and the ceiling on how many devices may be registered at all.
+    """
     endpoint = subscription.get("endpoint")
     keys = subscription.get("keys") or {}
     p256dh = keys.get("p256dh")
     auth = keys.get("auth")
     if not endpoint or not p256dh or not auth:
         raise ValueError("invalid subscription payload")
+
     existing = session.scalar(
         select(PushSubscription).where(PushSubscription.endpoint == endpoint)
     )
     if existing is not None:
+        # Re-subscribing rotates the keys; the browser does this on its own
+        # schedule, so treating it as an update is correct, not a special case.
         existing.p256dh = p256dh
         existing.auth = auth
         return
+
+    count = session.scalar(select(func.count()).select_from(PushSubscription)) or 0
+    if count >= MAX_SUBSCRIPTIONS:
+        LOG.warning("push_subscription_rejected reason=limit count=%s", count)
+        raise ValueError(f"too many push subscriptions (max {MAX_SUBSCRIPTIONS})")
+
     session.add(PushSubscription(endpoint=endpoint, p256dh=p256dh, auth=auth))
 
 

@@ -1,0 +1,147 @@
+# Continuous integration — TESTS ONLY.
+#
+# READ THIS BEFORE ADDING A JOB
+# -----------------------------
+# A scheduled GitHub Actions workflow used to live in this repository and was
+# deleted on purpose (commit cf7aed9). It ran the collector against a THROWAWAY
+# SQLite file restored from the Actions cache, then sent Telegram digests from it.
+# Because momentum, scores and confidence are all functions of history depth, that
+# workflow and the deployed service could contradict each other about the same
+# stock on the same day — while both looked correct in isolation.
+#
+# This workflow exists to run tests. It must never:
+#
+#   * carry the Telegram bot credential, or any other notification secret
+#     (deliberately not spelled out here: the guard below is a substring check
+#     over every workflow file, so even naming the variable in a comment trips
+#     it — which is the correct behaviour for a check whose whole job is to be
+#     impossible to argue with)
+#   * collect market data, or reach casablanca-bourse.com / bkam.ma
+#   * start the scheduler (ENABLE_SCHEDULER is forced to false)
+#   * touch a production database
+#   * deploy
+#
+# `tests/test_packaging.py` fails the suite if any workflow file reintroduces a
+# Telegram token, so the rule is enforced by the suite this workflow runs — not
+# merely by this comment.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege: this workflow reads code and reports status. It has no reason
+# to write to the repository, publish packages, or mint an id-token.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Belt and braces alongside conftest, which already forces this. A test run that
+  # started APScheduler would begin scraping from a CI runner.
+  ENABLE_SCHEDULER: "false"
+  # The suite has its own guard (conftest's `no_outbound_network`); this makes the
+  # intent visible at the workflow level too.
+  PYTHONWARNINGS: "default"
+
+jobs:
+  python:
+    name: Python — tests, coverage, migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Tests with coverage
+        run: |
+          pytest -q \
+            --cov=moroccan_stock_intelligence \
+            --cov-report=term-missing \
+            --cov-report=xml
+
+      - name: Coverage floor
+        # The audit measured 78%. This fails a change that drops below it rather
+        # than letting coverage erode one merge at a time.
+        run: |
+          python - <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          rate = float(ET.parse("coverage.xml").getroot().get("line-rate"))
+          percent = rate * 100
+          print(f"line coverage: {percent:.2f}%")
+          if percent < 78.0:
+              sys.exit(f"coverage {percent:.2f}% is below the 78% floor")
+          PY
+
+      - name: Migrations apply to an empty database, then roll back
+        # `create_all` builds a fresh schema, so a broken migration is invisible
+        # until it meets the deployed database. This exercises the real path.
+        run: |
+          python -m moroccan_stock_intelligence.cli migrate --to head
+          python -m moroccan_stock_intelligence.cli migrate-status
+        env:
+          DATABASE_URL: sqlite:///ci-check.db
+
+  flutter:
+    name: Flutter — analyze, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        working-directory: flutter_app
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: flutter_app
+        run: flutter analyze --no-fatal-infos
+
+      - name: Widget tests
+        working-directory: flutter_app
+        run: flutter test
+
+      - name: Build web
+        working-directory: flutter_app
+        run: flutter build web --release
+
+      - name: The committed bundle must match the source
+        # The P0 finding: webapp_flutter/ is what Railway serves, and it had
+        # drifted from flutter_app/lib/ with nothing able to notice. A stale
+        # bundle means the deployed app differs from the code under review.
+        run: |
+          built=$(sha256sum flutter_app/build/web/main.dart.js | cut -d' ' -f1)
+          shipped=$(sha256sum webapp_flutter/main.dart.js | cut -d' ' -f1)
+          echo "built:   $built"
+          echo "shipped: $shipped"
+          if [ "$built" != "$shipped" ]; then
+            echo "::error::webapp_flutter/ is stale. Rebuild and commit it — see scripts/verify-bundle.sh"
+            exit 1
+          fi
+
+      - name: The shipped bundle can authenticate
+        run: |
+          grep -q "auth/login" webapp_flutter/main.dart.js \
+            || { echo "::error::the bundle has no login flow and would 401 on every route"; exit 1; }

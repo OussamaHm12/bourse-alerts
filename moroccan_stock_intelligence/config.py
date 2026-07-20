@@ -53,6 +53,30 @@ class Settings:
         "no",
     }
 
+    # --- Authentication (single owner) ---
+    # The platform holds real holdings, buy prices and P/L. AUTH_PASSWORD is the
+    # whole secret: it authenticates the owner AND derives the session cookie's
+    # signing key, so changing it here rotates the secret and invalidates every
+    # live session in one move.
+    #
+    # There is no default on purpose. Unset (or under 12 characters) makes the
+    # protected routes answer 503 rather than 200 — see services/auth.py: an auth
+    # layer that disables itself on a missing env var is the bug it exists to fix.
+    auth_password: str | None = os.getenv("AUTH_PASSWORD")
+    # 30 days: the owner opens an installed PWA, where a monthly login is the most
+    # friction a personal tool can carry before the password starts living in a
+    # sticky note.
+    auth_session_days: int = int(os.getenv("AUTH_SESSION_DAYS", "30"))
+    # Railway terminates TLS, so the cookie must never travel in clear. Overridable
+    # only for local HTTP testing.
+    auth_cookie_secure: bool = os.getenv("AUTH_COOKIE_SECURE", "true").lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+    auth_max_attempts: int = int(os.getenv("AUTH_MAX_ATTEMPTS", "5"))
+    auth_lockout_seconds: int = int(os.getenv("AUTH_LOCKOUT_SECONDS", "300"))
+
     # Web Push (VAPID). Generate with: python -m moroccan_stock_intelligence.cli gen-vapid
     vapid_public_key: str | None = os.getenv("VAPID_PUBLIC_KEY")
     vapid_private_key: str | None = os.getenv("VAPID_PRIVATE_KEY")
@@ -99,6 +123,18 @@ class Settings:
     min_calibration_samples: int = int(os.getenv("MIN_CALIBRATION_SAMPLES", "20"))
     # A move smaller than this is treated as "flat", not as a direction.
     flat_return_pct: float = float(os.getenv("FLAT_RETURN_PCT", "1.5"))
+
+    # --- Indicator history requirements ---
+    # Fraction of a moving average's nominal window that must actually be present
+    # before the value is reported at all. 1.0 (strict) is the default and the
+    # honest setting: a MA200 means 200 séances.
+    #
+    # Lowering it is a deliberate, documented trade — you accept a MA200 computed
+    # from, say, 180 séances in exchange for the medium/long horizons becoming
+    # usable sooner on a newly listed symbol. It is floored at 0.75 in
+    # services/analytics (MIN_ABSOLUTE_COVERAGE) so no value here can reproduce the
+    # original defect, where ten séances were served as a MA200.
+    ma_min_coverage: float = float(os.getenv("MA_MIN_COVERAGE", "1.0"))
 
     # --- Optional LLM synthesis (Phase 10) ---
     # The platform is fully functional with NO llm. Setting llm_provider=anthropic
