@@ -9,7 +9,8 @@
 # Deploy: push this repo, then on render.com → New → Blueprint → pick this repo.
 # Fill the secret env vars (marked sync:false) in the dashboard after the first deploy.
 #
-# NOTE: the scheduler (10:00/12:00/14:00/16:00 notifications) needs an always-on
+# NOTE: the scheduler (09:00 / 11:00 / 13:00 / 15:00 / 17:00 notifications, plus
+# the 18:00 research run and the 22:00 backup) needs an always-on
 # instance. Render's Free plan sleeps after ~15 min idle, which would skip those
 # jobs — use the Starter plan (or keep the GitHub Actions Telegram path for the
 # guaranteed schedule and use the PWA just for viewing).
@@ -33,6 +34,12 @@ services:
       - key: HTTP_ALLOW_INSECURE_SOURCE_RETRY
         value: "true"
       # --- secrets: set these in the Render dashboard (never committed) ---
+      # AUTH_PASSWORD is REQUIRED. Without it (or under 12 characters) every
+      # protected route answers 503 and the app is unusable — deliberately, since
+      # the alternative is serving holdings and P/L to anyone with the URL.
+      # Changing it here also invalidates every live session.
+      - key: AUTH_PASSWORD
+        sync: false
       - key: VAPID_PUBLIC_KEY
         sync: false
       - key: VAPID_PRIVATE_KEY
