@@ -7,6 +7,11 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
+import 'app/app_shell.dart';
+import 'auth/login_page.dart';
+import 'design_system/app_colors.dart';
+import 'design_system/app_theme.dart';
+
 // --- minimal JS bridge to the proven web-push code living in web/push.js ---
 @JS('appEnablePush')
 external JSPromise<JSString> appEnablePush();
@@ -16,58 +21,191 @@ external JSPromise<JSString> appTestPush();
 external JSPromise<JSString> appRunNow();
 
 // ------------------------------- palette ---------------------------------- //
-const bg = Color(0xFF0B1120);
-const surface = Color(0xFF131C2E);
-const surface2 = Color(0xFF1B2740);
-const line = Color(0xFF26324A);
-const text = Color(0xFFE6EDF7);
-const muted = Color(0xFF8A9BB5);
-const accent = Color(0xFF38BDF8);
-const green = Color(0xFF34D399);
-const red = Color(0xFFFB7185);
-const amber = Color(0xFFFBBF24);
+// These names are kept as thin aliases onto the design system so the ~200 call
+// sites in the pages below keep compiling while the visual identity moves into
+// `design_system/`. New code reads `context.palette` instead, which is
+// theme-aware; these constants are dark-theme values and are being retired.
+const bg = AppColors.darkGround;
+const surface = AppColors.darkSurface;
+const surface2 = AppColors.darkSurfaceRaised;
+const line = AppColors.darkLine;
+const text = AppColors.darkText;
+const muted = AppColors.darkTextMuted;
+const accent = AppColors.primary;
+const green = AppColors.bull;
+const red = AppColors.bear;
+const amber = AppColors.warn;
 
 void main() => runApp(const BourseApp());
 
 class BourseApp extends StatelessWidget {
   const BourseApp({super.key});
+
+  @override
+  Widget build(BuildContext context) => MaterialApp(
+        title: 'Bourse Casablanca',
+        debugShowCheckedModeBanner: false,
+        theme: AppTheme.light(),
+        darkTheme: AppTheme.dark(),
+        // The reader's OS preference decides. A financial dashboard is opened at
+        // 08:00 and at 23:00 by the same person; forcing one brightness makes it
+        // wrong half the time.
+        themeMode: ThemeMode.system,
+        home: const AppGate(),
+      );
+}
+
+/// Chooses between the login screen and the app.
+///
+/// Three states, not two. `null` means "we have not asked the server yet", and it
+/// renders a dedicated splash: flashing the login form for 200 ms on every launch
+/// of an installed PWA — which is what a two-state gate does — reads as a bug and
+/// undermines exactly the confidence a login screen exists to build.
+class AppGate extends StatefulWidget {
+  const AppGate({super.key});
+
+  @override
+  State<AppGate> createState() => _AppGateState();
+}
+
+class _AppGateState extends State<AppGate> {
+  bool? _signedIn;
+
+  @override
+  void initState() {
+    super.initState();
+    authenticated.addListener(_onAuthChanged);
+    _probeSession();
+  }
+
+  @override
+  void dispose() {
+    authenticated.removeListener(_onAuthChanged);
+    super.dispose();
+  }
+
+  void _onAuthChanged() {
+    if (mounted) setState(() => _signedIn = authenticated.value);
+  }
+
+  /// Ask the server whether the cookie we may already hold is still valid.
+  ///
+  /// `/api/auth/status` is public precisely so this call can be made before
+  /// holding a session, and it returns nothing an attacker could not learn by
+  /// attempting a login.
+  Future<void> _probeSession() async {
+    try {
+      final status = await api('api/auth/status');
+      final valid = status['authenticated'] == true;
+      authenticated.value = valid;
+      if (mounted) setState(() => _signedIn = valid);
+    } catch (_) {
+      // Offline, or the server is down. Show the login screen rather than an
+      // empty dashboard: the owner can then see the real error on submit.
+      if (mounted) setState(() => _signedIn = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final scheme = ColorScheme.fromSeed(
-      seedColor: accent,
-      brightness: Brightness.dark,
-    ).copyWith(surface: surface, primary: accent, onPrimary: const Color(0xFF06283D));
-    return MaterialApp(
-      title: 'Bourse Casablanca',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: scheme,
-        scaffoldBackgroundColor: bg,
-        textTheme: Typography.whiteMountainView.apply(
-          bodyColor: text,
-          displayColor: text,
-        ),
-        splashFactory: InkSparkle.splashFactory,
-      ),
-      home: const HomeShell(),
-    );
+    if (_signedIn == null) return const AuthChecking();
+    if (_signedIn == false) {
+      return LoginPage(
+        onSubmit: (password) async {
+          final failure = await login(password);
+          return failure;
+        },
+      );
+    }
+    return const HomeShell();
   }
 }
 
 // ------------------------------- api -------------------------------------- //
-Future<dynamic> api(String path) async {
-  final uri = Uri.base.resolve(path).toString();
-  final txt = await html.HttpRequest.getString(uri);
-  return jsonDecode(txt);
+// Every call here is same-origin, so the browser attaches the session cookie on
+// its own — no header plumbing, no token to store. The cookie is HttpOnly, so
+// this code CANNOT read it even if it tried, which is exactly why the credential
+// survives an XSS in the bundle: nothing secret is ever compiled into the app.
+//
+// A 401 means the session is gone — expired, or the owner rotated AUTH_PASSWORD.
+// It has to be caught here at the chokepoint: left to the tabs, it would surface
+// as ~20 separate "Erreur : ..." cards, which looks like a data outage and would
+// send the owner debugging the scrapers instead of logging back in.
+
+/// The single source of truth for "is the owner signed in". `AppGate` listens.
+final authenticated = ValueNotifier<bool>(false);
+
+class AuthRequired implements Exception {
+  const AuthRequired();
+  @override
+  String toString() => 'Session expirée';
 }
 
-// getString() is GET-only, so favoriting needs its own verb-aware call.
-Future<dynamic> apiSend(String method, String path) async {
+/// dart:html hands failures back as a ProgressEvent, not as the response, so the
+/// status code is only reachable through its target.
+int? _statusOf(html.ProgressEvent e) => (e.target as html.HttpRequest?)?.status;
+
+Future<html.HttpRequest> _send(String method, String path, {String? json}) async {
   final uri = Uri.base.resolve(path).toString();
-  final req = await html.HttpRequest.request(uri, method: method);
+  try {
+    return await html.HttpRequest.request(
+      uri,
+      method: method,
+      sendData: json,
+      requestHeaders: json == null ? null : {'Content-Type': 'application/json'},
+    );
+  } on html.ProgressEvent catch (e) {
+    if (_statusOf(e) == 401) {
+      authenticated.value = false; // -> AppGate swaps in the login screen
+      throw const AuthRequired();
+    }
+    rethrow;
+  }
+}
+
+dynamic _decode(html.HttpRequest req) {
   final body = req.responseText;
   return (body == null || body.isEmpty) ? <String, dynamic>{} : jsonDecode(body);
+}
+
+Future<dynamic> api(String path) async => _decode(await _send('GET', path));
+
+// getString() is GET-only, so favoriting needs its own verb-aware call.
+Future<dynamic> apiSend(String method, String path) async =>
+    _decode(await _send(method, path));
+
+/// Exchange the password for a session cookie. Returns null on success, else the
+/// message to show. The password lives in a local variable for the duration of
+/// one POST and is never stored anywhere.
+Future<String?> login(String password) async {
+  try {
+    await html.HttpRequest.request(
+      Uri.base.resolve('api/auth/login').toString(),
+      method: 'POST',
+      sendData: jsonEncode({'password': password}),
+      requestHeaders: {'Content-Type': 'application/json'},
+    );
+    authenticated.value = true;
+    return null;
+  } on html.ProgressEvent catch (e) {
+    final req = e.target as html.HttpRequest?;
+    return switch (req?.status) {
+      401 => 'Mot de passe incorrect.',
+      429 => 'Trop de tentatives. Réessayez dans '
+          '${req?.getResponseHeader('Retry-After') ?? '300'} s.',
+      503 => 'Authentification non configurée sur le serveur.',
+      _ => 'Connexion impossible. Vérifiez votre réseau.',
+    };
+  }
+}
+
+Future<void> logout() async {
+  try {
+    await _send('POST', 'api/auth/logout');
+  } catch (_) {
+    // The cookie may already be gone. Either way the local state must drop.
+  }
+  authenticated.value = false;
 }
 
 // ---------------------------- data freshness ------------------------------ //
@@ -226,9 +364,9 @@ Widget badge(String label, [Color? color]) {
   return Container(
     padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
     decoration: BoxDecoration(
-      color: c.withOpacity(0.14),
+      color: c.withValues(alpha: 0.14),
       borderRadius: BorderRadius.circular(999),
-      border: Border.all(color: c.withOpacity(0.55)),
+      border: Border.all(color: c.withValues(alpha: 0.55)),
     ),
     child: Text(label, style: TextStyle(color: c, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.3)),
   );
@@ -291,66 +429,109 @@ class _HomeShellState extends State<HomeShell> {
     refreshData(); // and bring the market up to date; tabs reload when it lands
   }
 
+  /// Ordered so the five that earn a phone bottom-bar slot come first: the
+  /// destinations opened daily. Actus and Notifs are read occasionally and move
+  /// into the "Plus" sheet on a phone rather than shrinking every target below
+  /// the 48dp minimum.
+  static const _navItems = <NavItem>[
+    NavItem(
+      label: 'Portefeuille',
+      icon: Icons.account_balance_wallet_outlined,
+      selectedIcon: Icons.account_balance_wallet,
+      tooltip: 'Vos positions et leur P/L net',
+    ),
+    NavItem(
+      label: 'Favoris',
+      icon: Icons.star_border_rounded,
+      selectedIcon: Icons.star_rounded,
+      tooltip: 'Votre liste de surveillance',
+    ),
+    NavItem(
+      label: 'Marché',
+      icon: Icons.show_chart_rounded,
+      selectedIcon: Icons.ssid_chart_rounded,
+      tooltip: 'Toutes les valeurs suivies',
+    ),
+    NavItem(
+      label: 'Opportunités',
+      icon: Icons.bolt_outlined,
+      selectedIcon: Icons.bolt_rounded,
+      tooltip: 'Screener par score',
+    ),
+    NavItem(
+      label: 'Analyse',
+      icon: Icons.psychology_outlined,
+      selectedIcon: Icons.psychology_rounded,
+      tooltip: 'Rapport complet par titre',
+    ),
+    NavItem(
+      label: 'Actualités',
+      icon: Icons.article_outlined,
+      selectedIcon: Icons.article_rounded,
+      tooltip: 'Avis officiels classés',
+    ),
+    NavItem(
+      label: 'Notifications',
+      icon: Icons.notifications_outlined,
+      selectedIcon: Icons.notifications_rounded,
+      tooltip: 'Historique des alertes',
+    ),
+  ];
+
+  Future<void> _manualRefresh() async {
+    final outcome = await refreshData(force: true);
+    if (!mounted) return;
+    final message = switch (outcome) {
+      'done' => 'Données actualisées.',
+      'fresh' => 'Déjà à jour — les cours sont différés d’environ 15 minutes.',
+      'busy' => 'Une actualisation est déjà en cours.',
+      'timeout' => 'La collecte est plus longue que prévu. Les données arriveront.',
+      _ => 'Actualisation impossible. Les données affichées restent celles du dernier relevé.',
+    };
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _signOut() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Se déconnecter ?'),
+        content: const Text(
+            'Il faudra saisir à nouveau le mot de passe pour revenir.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Annuler'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Se déconnecter'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) await logout();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        child: Column(children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
-            child: Row(children: [
-              Container(
-                width: 30,
-                height: 30,
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(colors: [accent, green]),
-                  borderRadius: BorderRadius.circular(9),
-                ),
-                child: const Icon(Icons.trending_up, size: 18, color: Color(0xFF06283D)),
-              ),
-              const SizedBox(width: 10),
-              const Text('Bourse Casablanca',
-                  style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700, letterSpacing: -0.2)),
-              const Spacer(),
-              ValueListenableBuilder<bool>(
-                valueListenable: refreshing,
-                builder: (c, busy, _) => busy
-                    ? Row(children: const [
-                        SizedBox(
-                          width: 12,
-                          height: 12,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: accent),
-                        ),
-                        SizedBox(width: 7),
-                        Text('Mise à jour…', style: TextStyle(color: muted, fontSize: 11.5)),
-                      ])
-                    : const SizedBox.shrink(),
-              ),
-            ]),
-          ),
-          Expanded(child: IndexedStack(index: _idx, children: _pages)),
-        ]),
-      ),
-      bottomNavigationBar: NavigationBarTheme(
-        data: NavigationBarThemeData(
-          backgroundColor: surface,
-          indicatorColor: accent.withOpacity(0.18),
-          labelTextStyle: WidgetStateProperty.all(const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+    return ValueListenableBuilder<bool>(
+      valueListenable: refreshing,
+      builder: (context, busy, _) => AppShell(
+        items: _navItems,
+        index: _idx,
+        onSelect: (selected) => setState(() => _idx = selected),
+        header: StatusStrip(
+          title: _navItems[_idx].label,
+          asOf: busy ? 'collecte en cours…' : null,
+          refreshing: busy,
+          onRefresh: _manualRefresh,
+          onSignOut: _signOut,
         ),
-        child: NavigationBar(
-          selectedIndex: _idx,
-          height: 64,
-          labelBehavior: NavigationDestinationLabelBehavior.onlyShowSelected,
-          onDestinationSelected: (i) => setState(() => _idx = i),
-          destinations: const [
-            NavigationDestination(icon: Icon(Icons.account_balance_wallet_outlined), selectedIcon: Icon(Icons.account_balance_wallet), label: 'Portefeuille'),
-            NavigationDestination(icon: Icon(Icons.star_border), selectedIcon: Icon(Icons.star), label: 'Favoris'),
-            NavigationDestination(icon: Icon(Icons.show_chart_outlined), selectedIcon: Icon(Icons.show_chart), label: 'Marché'),
-            NavigationDestination(icon: Icon(Icons.bolt_outlined), selectedIcon: Icon(Icons.bolt), label: 'Opportunités'),
-            NavigationDestination(icon: Icon(Icons.psychology_outlined), selectedIcon: Icon(Icons.psychology), label: 'Analyse'),
-            NavigationDestination(icon: Icon(Icons.article_outlined), selectedIcon: Icon(Icons.article), label: 'Actus'),
-            NavigationDestination(icon: Icon(Icons.notifications_outlined), selectedIcon: Icon(Icons.notifications), label: 'Notifs'),
-          ],
+        child: SafeArea(
+          top: false,
+          child: IndexedStack(index: _idx, children: _pages),
         ),
       ),
     );
@@ -491,7 +672,7 @@ class _PortfolioPageState extends State<PortfolioPage> with ReloadsOnRefresh<Por
             Container(
               margin: const EdgeInsets.only(top: 2),
               padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-              decoration: BoxDecoration(color: plc(p['total_pl_pct']).withOpacity(0.14), borderRadius: BorderRadius.circular(6)),
+              decoration: BoxDecoration(color: plc(p['total_pl_pct']).withValues(alpha: 0.14), borderRadius: BorderRadius.circular(6)),
               child: Text('${signed(p['total_pl_pct'], 1)}%', style: TextStyle(color: plc(p['total_pl_pct']), fontWeight: FontWeight.w700, fontSize: 12)),
             ),
           ]),
@@ -794,7 +975,7 @@ Widget _stockRow(BuildContext context, Map<String, dynamic> s) {
       Container(
         width: 36,
         height: 36,
-        decoration: BoxDecoration(color: tcol.withOpacity(0.14), borderRadius: BorderRadius.circular(10)),
+        decoration: BoxDecoration(color: tcol.withValues(alpha: 0.14), borderRadius: BorderRadius.circular(10)),
         child: Icon(icon, color: tcol, size: 20),
       ),
       const SizedBox(width: 12),
@@ -2090,7 +2271,7 @@ Widget _priceChart(List history) {
           belowBarData: BarAreaData(
             show: true,
             gradient: LinearGradient(
-              colors: [col.withOpacity(0.28), col.withOpacity(0.0)],
+              colors: [col.withValues(alpha: 0.28), col.withValues(alpha: 0.0)],
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
             ),
