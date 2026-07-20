@@ -579,6 +579,25 @@ def performance() -> dict:
         return performance_payload(session)
 
 
+@app.get("/api/admin/system-status")
+def system_status() -> dict:
+    """Which feeds are populated and fresh, and which analysts are running blind.
+
+    Private like every other route (deny-by-default), and deliberately light: row
+    counts, timestamps and statuses. It exposes no market data, no holdings and no
+    configuration — a status endpoint that leaks secrets is a worse problem than
+    the outage it was added to diagnose.
+
+    Exists because a scraper returning 200 with an empty list looks exactly like
+    one that worked, and three analysts were silently degraded for that reason
+    (AUDIT_2026-07-18.md §4).
+    """
+    from moroccan_stock_intelligence.services import data_health
+
+    with SessionFactory() as session:
+        return data_health.check(session).as_dict()
+
+
 # The PWA static files are mounted last so the API routes above take priority.
 if WEBAPP_DIR.exists():
     app.mount("/", StaticFiles(directory=str(WEBAPP_DIR), html=True), name="webapp")

@@ -43,7 +43,8 @@ import gzip
 import logging
 import shutil
 import sqlite3
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -174,6 +175,171 @@ def restore_readable(archive: Path, target: Path) -> bool:
     with gzip.open(archive, "rb") as src, target.open("wb") as dst:
         shutil.copyfileobj(src, dst)
     return _integrity_ok(target)
+
+
+@dataclass(frozen=True)
+class RestoreResult:
+    ok: bool
+    archive: str
+    target: str
+    safety_copy: str | None = None
+    tables: int = 0
+    rows: dict[str, int] = field(default_factory=dict)
+    error: str | None = None
+
+
+def _table_counts(db: Path) -> dict[str, int]:
+    """Row count per table, used to prove a restore actually carried the data."""
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        names = [
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+        ]
+        return {name: conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0] for name in names}
+    finally:
+        conn.close()
+
+
+def restore_backup(
+    archive: Path,
+    *,
+    target: Path | None = None,
+    safety_copy: bool = True,
+) -> RestoreResult:
+    """Replace the live database with a snapshot.
+
+    THE ORDER HERE IS THE WHOLE POINT
+    ---------------------------------
+    The audit noted the backup was verified but the RESTORE never was
+    (AUDIT_2026-07-18.md §15) — an untested restore path is an assumption, and
+    it is the assumption you discover is wrong at the worst possible moment.
+
+    Every step happens before anything destructive:
+
+      1. decompress to a temporary file
+      2. integrity-check the DECOMPRESSED COPY — a corrupt archive must be
+         discovered while the live database is still the live database
+      3. copy the current database aside (a restore is itself a change that can
+         be regretted, and "I restored the wrong snapshot" needs an undo)
+      4. only then, atomically replace
+
+    `os.replace` is atomic within a filesystem, so there is no instant where the
+    database file is absent or half-written.
+
+    Refuses to touch a non-SQLite target: on PostgreSQL this operation belongs to
+    `pg_restore`, and quietly doing nothing would be worse than refusing.
+    """
+    destination = target or sqlite_path()
+    if destination is None:
+        return RestoreResult(
+            ok=False,
+            archive=str(archive),
+            target="",
+            error="DATABASE_URL is not SQLite — restore is a pg_restore operation there",
+        )
+    if not archive.exists():
+        return RestoreResult(
+            ok=False, archive=str(archive), target=str(destination), error="archive not found"
+        )
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staged = destination.with_suffix(f"{destination.suffix}.restore-staging")
+    kept: Path | None = None
+
+    try:
+        # 1 + 2 — verify before the live database is at any risk.
+        with gzip.open(archive, "rb") as src, staged.open("wb") as dst:
+            shutil.copyfileobj(src, dst)
+        if not _integrity_ok(staged):
+            staged.unlink(missing_ok=True)
+            return RestoreResult(
+                ok=False,
+                archive=str(archive),
+                target=str(destination),
+                error="the archive failed its integrity check — the live database was NOT touched",
+            )
+
+        counts = _table_counts(staged)
+
+        # 3 — an undo for the restore itself.
+        if safety_copy and destination.exists():
+            stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+            kept = destination.with_name(f"{destination.name}.pre-restore-{stamp}")
+            shutil.copy2(destination, kept)
+            LOG.info("restore_safety_copy path=%s", kept)
+
+        # 4 — atomic swap.
+        os.replace(staged, destination)
+        LOG.info(
+            "restore_done archive=%s target=%s tables=%s rows=%s",
+            archive.name,
+            destination,
+            len(counts),
+            sum(counts.values()),
+        )
+        return RestoreResult(
+            ok=True,
+            archive=str(archive),
+            target=str(destination),
+            safety_copy=str(kept) if kept else None,
+            tables=len(counts),
+            rows=counts,
+        )
+    # EOFError is listed explicitly because it is NOT an OSError: gzip raises it
+    # when a stream ends before its end-of-stream marker, which is exactly what a
+    # half-uploaded or interrupted archive looks like. Without it a truncated
+    # backup crashed the command instead of failing cleanly — and a crash
+    # mid-restore is the worst possible moment to lose the error handling.
+    # (gzip.BadGzipFile is not listed: it subclasses OSError, already covered.)
+    except (OSError, EOFError, sqlite3.Error) as exc:
+        staged.unlink(missing_ok=True)
+        LOG.exception("restore_failed archive=%s", archive)
+        return RestoreResult(
+            ok=False,
+            archive=str(archive),
+            target=str(destination),
+            safety_copy=str(kept) if kept else None,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+
+def latest_archive(backup_dir: Path | None = None) -> Path | None:
+    """The newest snapshot. Names are timestamp-sorted, so lexical order is time order."""
+    directory = backup_dir or Path(settings.backup_dir)
+    if not directory.exists():
+        return None
+    archives = sorted(directory.glob(_GLOB), reverse=True)
+    return archives[0] if archives else None
+
+
+def render_restore(result: RestoreResult) -> str:
+    if not result.ok:
+        return f"ÉCHEC de la restauration — {result.error}"
+    lines = [
+        "Restauration réussie.",
+        f"  archive : {result.archive}",
+        f"  base    : {result.target}",
+        f"  tables  : {result.tables}",
+        f"  lignes  : {sum(result.rows.values())}",
+    ]
+    if result.safety_copy:
+        lines.append(f"  copie de sécurité (avant restauration) : {result.safety_copy}")
+    # Per-table counts, biggest first. A single total tells you the restore ran;
+    # the breakdown is what lets you say "yes, that is my database" — which is the
+    # question you are actually asking after a recovery.
+    populated_tables = sorted(
+        ((name, count) for name, count in result.rows.items() if count),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    if populated_tables:
+        lines.append("  détail  :")
+        lines.extend(f"    {name:<22} {count:>8}" for name, count in populated_tables)
+    return "\n".join(lines)
 
 
 def run_backup(
