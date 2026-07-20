@@ -17,3 +17,11 @@ flutter_app/.flutter-plugins-dependencies
 
 # Alembic
 migrations/versions/__pycache__/
+
+# Coverage artefacts. `.coverage` is a binary SQLite file rewritten by every
+# pytest-cov run, so tracking it guaranteed a conflict on every merge while
+# telling a reader nothing — the number that matters is reported by CI.
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
