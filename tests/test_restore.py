@@ -86,7 +86,6 @@ def snapshot(populated: Path, backup_dir: Path) -> Path:
     result = run_backup(
         database_url=f"sqlite:///{populated.as_posix()}",
         backup_dir=backup_dir,
-        ship=False,
         keep=5,
     )
     assert result.ok, result.error

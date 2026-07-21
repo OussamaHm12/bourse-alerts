@@ -2,7 +2,7 @@
 # this blueprint is the escape hatch if that ever changes. It is not deployed today.
 #
 # Deploy exactly ONE of the two. Whichever runs is the single source of truth for
-# notifications: two hosts holding TELEGRAM_BOT_TOKEN would each send digests from
+# notifications: two hosts holding VAPID_PRIVATE_KEY would each push digests from
 # their own volume, i.e. from different histories, and contradict each other about
 # the same stock — the exact failure that killed the old GitHub Actions path.
 #
@@ -12,8 +12,7 @@
 # NOTE: the scheduler (09:00 / 11:00 / 13:00 / 15:00 / 17:00 notifications, plus
 # the 18:00 research run and the 22:00 backup) needs an always-on
 # instance. Render's Free plan sleeps after ~15 min idle, which would skip those
-# jobs — use the Starter plan (or keep the GitHub Actions Telegram path for the
-# guaranteed schedule and use the PWA just for viewing).
+# jobs — use the Starter plan.
 services:
   - type: web
     name: bourse-alerts
@@ -47,9 +46,4 @@ services:
       - key: VAPID_SUBJECT
         sync: false
       - key: PORTFOLIO_JSON # config/portfolio.json is gitignored; pass it here as one-line JSON
-        sync: false
-      # --- optional: also send the Telegram digests from this server ---
-      - key: TELEGRAM_BOT_TOKEN
-        sync: false
-      - key: TELEGRAM_CHAT_ID
         sync: false

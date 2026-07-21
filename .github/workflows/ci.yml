@@ -4,26 +4,26 @@
 # -----------------------------
 # A scheduled GitHub Actions workflow used to live in this repository and was
 # deleted on purpose (commit cf7aed9). It ran the collector against a THROWAWAY
-# SQLite file restored from the Actions cache, then sent Telegram digests from it.
+# SQLite file restored from the Actions cache, then sent digests from it.
 # Because momentum, scores and confidence are all functions of history depth, that
 # workflow and the deployed service could contradict each other about the same
 # stock on the same day — while both looked correct in isolation.
 #
 # This workflow exists to run tests. It must never:
 #
-#   * carry the Telegram bot credential, or any other notification secret
-#     (deliberately not spelled out here: the guard below is a substring check
-#     over every workflow file, so even naming the variable in a comment trips
-#     it — which is the correct behaviour for a check whose whole job is to be
-#     impossible to argue with)
+#   * carry a notification secret of any kind — today that means the web-push
+#     signing key (deliberately not spelled out here: the guard is a substring
+#     check over every workflow file, so even naming the variable in a comment
+#     trips it — which is the correct behaviour for a check whose whole job is
+#     to be impossible to argue with)
 #   * collect market data, or reach casablanca-bourse.com / bkam.ma
 #   * start the scheduler (ENABLE_SCHEDULER is forced to false)
 #   * touch a production database
 #   * deploy
 #
-# `tests/test_packaging.py` fails the suite if any workflow file reintroduces a
-# Telegram token, so the rule is enforced by the suite this workflow runs — not
-# merely by this comment.
+# `tests/test_scheduler_jobs.py` fails the suite if any workflow file reintroduces
+# a notification secret, so the rule is enforced by the suite this workflow runs —
+# not merely by this comment.
 
 name: CI
 

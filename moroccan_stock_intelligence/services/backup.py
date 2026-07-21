@@ -6,18 +6,30 @@ learning history. The upstream source only re-serves a ~3-year rolling window
 (see `collectors/history.py`), so anything older that is lost is lost *for good* —
 no re-collection can rebuild it. Nothing else in the codebase fails that way.
 
-Two tiers, because they defend against different accidents:
+What this covers, and what it does NOT
+-------------------------------------
+**Local rotated copies on the volume.** Cheap, fast to restore, and the answer to
+logical damage: a bad backfill, a hand-run UPDATE, a botched schema change. This
+is the whole of the protection today.
 
-  * **local rotated copies** (on the volume) — cheap, fast to restore, and the
-    answer to logical damage: a bad backfill, a hand-run UPDATE, a botched
-    schema change. Useless if the volume itself goes.
-  * **off-host copy** (Telegram) — the answer to losing the volume. Telegram is
-    not a clever choice, it is the *available* one: the bot token and chat id
-    already exist, the owner already reads that channel, and it adds no
-    infrastructure and no cost — which is the standing constraint in
-    ARCHITECTURE_AI_ANALYST.md §2.8 ("single-user, single-container, cheap").
+**There is no off-host copy.** An earlier version shipped every snapshot to
+Telegram; Telegram was removed from the project (the app is the only channel now)
+and no replacement was wired in its place. The consequence is deliberate and
+worth stating plainly rather than discovering it during a recovery:
 
-Three details that are not incidental:
+    If the Railway volume is lost, the backups are lost with it.
+
+That is not merely an inconvenience. The upstream history API only re-serves a
+~3-year rolling window, so séances older than that window cannot be re-collected
+by anyone, at any price. Restoring from an off-host copy is the only thing that
+would have brought them back.
+
+Closing this gap means putting the archive somewhere off the volume — object
+storage (S3/R2), a second host, or a periodic manual download of
+`data/backups/`. Until one exists, that manual download IS the disaster plan,
+and it only works if somebody actually runs it.
+
+Two details that are not incidental:
 
 1. **The snapshot uses SQLite's online backup API, never a file copy.** The
    scheduler and the API share this database and their jobs can overlap, so a
@@ -27,10 +39,6 @@ Three details that are not incidental:
 2. **Every snapshot is verified before it counts.** `PRAGMA integrity_check`
    runs against the copy, not the source. An unverified backup is a belief, not
    a backup.
-3. **Shipping is best-effort; the local copy is not.** If Telegram is down, over
-   quota, or the file is too big, the local snapshot still stands and the run
-   still reports success — with the reason recorded. Losing today's backup
-   because an upload failed would be the opposite of the point.
 
 PostgreSQL is out of scope here on purpose: its backup is `pg_dump`, not a file
 snapshot, and production is SQLite today (HANDOVER.md §1). A non-SQLite URL is
@@ -49,7 +57,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from moroccan_stock_intelligence.config import settings
-from moroccan_stock_intelligence.services.telegram import send_telegram_document
 
 LOG = logging.getLogger(__name__)
 
@@ -74,20 +81,13 @@ class BackupResult:
     path: Path | None = None
     size_bytes: int = 0
     integrity_ok: bool = False
-    shipped: bool = False
-    ship_error: str | None = None
     rotated: tuple[str, ...] = ()
     skipped_reason: str | None = None
     error: str | None = None
 
     @property
     def ok(self) -> bool:
-        """True when a verified local snapshot exists. Shipping is not part of this.
-
-        Deliberate: an off-host copy is the goal, but a verified local snapshot
-        that could not be uploaded is still a backup. Failing the whole run on a
-        Telegram hiccup would throw away the artefact we just built.
-        """
+        """True when a verified local snapshot exists on the volume."""
         return self.path is not None and self.integrity_ok and self.error is None
 
     @property
@@ -347,20 +347,16 @@ def run_backup(
     database_url: str | None = None,
     backup_dir: Path | None = None,
     keep: int | None = None,
-    ship: bool | None = None,
-    max_upload_mb: float | None = None,
     now: datetime | None = None,
 ) -> BackupResult:
-    """Snapshot → verify → compress → ship (best-effort) → rotate.
+    """Snapshot → verify → compress → rotate. All of it on the local volume.
 
-    Never raises for an expected condition (missing DB, wrong backend, upload
-    refused): those return a `BackupResult` carrying the reason, so the caller
-    decides. A genuine bug still propagates.
+    Never raises for an expected condition (missing DB, wrong backend): those
+    return a `BackupResult` carrying the reason, so the caller decides. A genuine
+    bug still propagates.
     """
     backup_dir = backup_dir or Path(settings.backup_dir)
     keep = settings.backup_keep if keep is None else keep
-    ship = settings.backup_to_telegram if ship is None else ship
-    max_upload_mb = settings.backup_max_upload_mb if max_upload_mb is None else max_upload_mb
     stamp = (now or datetime.now(UTC)).strftime("%Y%m%dT%H%M%SZ")
 
     source = sqlite_path(database_url)
@@ -404,54 +400,19 @@ def run_backup(
         plain.unlink(missing_ok=True)
 
     size = archive.stat().st_size
-    result = BackupResult(path=archive, size_bytes=size, integrity_ok=True)
-
-    shipped, ship_error = False, None
-    if ship:
-        shipped, ship_error = _ship(archive, size, max_upload_mb, stamp)
-
     rotated = rotate(backup_dir, keep)
     LOG.info(
-        "backup_done path=%s size_kb=%s integrity=ok shipped=%s rotated=%s",
+        "backup_done path=%s size_kb=%s integrity=ok rotated=%s",
         archive.name,
         size // 1024,
-        shipped,
         len(rotated),
     )
     return BackupResult(
         path=archive,
         size_bytes=size,
         integrity_ok=True,
-        shipped=shipped,
-        ship_error=ship_error,
         rotated=rotated,
     )
-
-
-def _ship(archive: Path, size: int, max_upload_mb: float, stamp: str) -> tuple[bool, str | None]:
-    """Push the snapshot off-host. Returns (shipped, error) — never raises."""
-    size_mb = size / (1024 * 1024)
-    if size_mb > max_upload_mb:
-        # Telegram refuses bot uploads above ~50 MB. Say so plainly rather than
-        # letting the API return an opaque error every night from now on.
-        msg = (
-            f"Archive de {size_mb:.1f} Mo au-dessus de la limite d'envoi ({max_upload_mb:.0f} Mo) : "
-            "copie hors-hôte non envoyée. La sauvegarde locale est intacte."
-        )
-        LOG.warning("backup_ship_skipped reason=too_large size_mb=%.1f", size_mb)
-        return False, msg
-    if not (settings.telegram_bot_token and settings.telegram_chat_id):
-        msg = "Identifiants Telegram absents : copie hors-hôte non envoyée."
-        LOG.warning("backup_ship_skipped reason=no_credentials")
-        return False, msg
-
-    caption = f"Sauvegarde base — {stamp} ({size_mb:.1f} Mo)"
-    try:
-        send_telegram_document(archive, caption=caption)
-    except Exception as exc:  # noqa: BLE001 — shipping must never sink the backup
-        LOG.warning("backup_ship_failed error=%s", exc)
-        return False, f"Envoi hors-hôte échoué : {exc}"
-    return True, None
 
 
 def render_result(result: BackupResult) -> str:
@@ -464,14 +425,18 @@ def render_result(result: BackupResult) -> str:
         "",
         "  Sauvegarde terminée",
         "  " + "─" * 58,
-        f"    Archive        : {result.path}",
-        f"    Taille         : {result.size_mb:.2f} Mo",
-        "    Intégrité      : ok (PRAGMA integrity_check sur la copie)",
-        f"    Copie hors-hôte: {'envoyée sur Telegram' if result.shipped else 'non envoyée'}",
+        f"    Archive     : {result.path}",
+        f"    Taille      : {result.size_mb:.2f} Mo",
+        "    Intégrité   : ok (PRAGMA integrity_check sur la copie)",
     ]
-    if result.ship_error:
-        lines.append(f"                     → {result.ship_error}")
     if result.rotated:
-        lines.append(f"    Rotation       : {len(result.rotated)} ancienne(s) archive(s) supprimée(s)")
+        lines.append(f"    Rotation    : {len(result.rotated)} ancienne(s) archive(s) supprimée(s)")
+    # Said on every successful run, not buried in a docstring: this copy lives on
+    # the same volume as the database it protects, so it does not survive losing
+    # that volume — and the history API cannot re-serve séances older than ~3 ans.
+    lines.append("")
+    lines.append("    ⚠️  Copie locale uniquement (même volume que la base).")
+    lines.append("        Perte du volume = perte de l'historique de plus de 3 ans,")
+    lines.append("        définitivement. Télécharger data/backups/ hors-hôte régulièrement.")
     lines.append("")
     return "\n".join(lines)

@@ -110,7 +110,7 @@ def test_the_portfolio_route_is_private():
 
 
 def test_run_now_is_private():
-    """A public run-now lets a stranger trigger a scrape and a Telegram message."""
+    """A public run-now lets a stranger trigger a scrape and a push notification."""
     assert not auth.is_public("/api/run-now")
 
 

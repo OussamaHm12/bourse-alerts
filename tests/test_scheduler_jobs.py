@@ -5,7 +5,7 @@ owns every collection, every report and every notification. These tests pin the
 two properties that Priority 1 was about, so neither can regress silently:
 
   * exactly ONE process sends notifications — no second scheduled runner may
-    reappear holding the bot token;
+    reappear holding a notification secret;
   * the database is backed up on a schedule, and a failing backup is loud.
 
 Job *logic* is tested in the modules that own it; what is asserted here is the
@@ -38,26 +38,34 @@ def jobs():
 
 
 def test_no_second_scheduled_notifier_exists_in_the_repo():
-    """No CI workflow may send digests again.
+    """No CI workflow may send notifications again.
 
-    A GitHub Actions cron used to send its own Telegram digests from a throwaway
-    SQLite file restored from the Actions cache — a different database, so
-    different scores, contradicting the app about the same stock. If a workflow
-    ever comes back, it must not carry the bot token.
+    A GitHub Actions cron used to send its own digests from a throwaway SQLite
+    file restored from the Actions cache — a different database, so different
+    scores, contradicting the app about the same stock.
+
+    The channel that failure happened on (Telegram) is gone, but the failure mode
+    is not: it belongs to *any* second scheduled sender. So the guard now polices
+    the credential that would enable one today — the VAPID private key behind web
+    push — plus the old bot token, so an old workflow restored from history still
+    trips it.
     """
     root = Path(__file__).resolve().parent.parent
     workflows = root / ".github" / "workflows"
     if not workflows.exists():
         return  # nothing to police
 
+    forbidden = ("VAPID_PRIVATE_KEY", "TELEGRAM_BOT_TOKEN")
     offenders = [
-        wf.name
+        f"{wf.name} ({secret})"
         for wf in workflows.glob("*.yml")
-        if "TELEGRAM_BOT_TOKEN" in wf.read_text(encoding="utf-8")
+        for secret in forbidden
+        if secret in wf.read_text(encoding="utf-8")
     ]
     assert offenders == [], (
-        f"{offenders} carries TELEGRAM_BOT_TOKEN. The deployed service is the only "
-        "sender — a second scheduled runner would notify from a different database."
+        f"{offenders} carries a notification secret. The deployed service is the "
+        "only sender — a second scheduled runner would notify from a different "
+        "database."
     )
 
 
@@ -90,75 +98,111 @@ def test_backup_runs_daily_after_the_last_writing_job(jobs):
     assert day_of_week.is_default, "backups must run at weekends too"
 
 
-def test_backup_job_alerts_when_the_snapshot_fails(monkeypatch):
-    """A silently failing backup is worse than none: it buys false confidence."""
-    sent: list[str] = []
-    monkeypatch.setattr(sched, "send_telegram_message", lambda msg, **k: sent.append(msg))
-    monkeypatch.setattr(
-        "moroccan_stock_intelligence.services.backup.run_backup",
-        lambda **k: __import__(
-            "moroccan_stock_intelligence.services.backup", fromlist=["BackupResult"]
-        ).BackupResult(error="base illisible"),
-    )
+class _FakeSession:
+    """Minimal stand-in: the backup job only opens a session to report a failure."""
 
-    sched._backup_job()
+    def __enter__(self):
+        return self
 
-    assert len(sent) == 1
-    assert "ÉCHOUÉE" in sent[0]
-    assert "base illisible" in sent[0]
+    def __exit__(self, *exc):
+        return False
 
 
-def test_backup_job_warns_when_the_off_host_copy_did_not_leave(monkeypatch):
-    """A local-only backup leaves the actual risk — losing the volume — uncovered."""
-    sent: list[str] = []
-    monkeypatch.setattr(sched, "send_telegram_message", lambda msg, **k: sent.append(msg))
+def _fake_factory():
+    return _FakeSession()
+
+
+def _backup_result(**kwargs):
     module = __import__(
         "moroccan_stock_intelligence.services.backup", fromlist=["BackupResult"]
     )
+    return module.BackupResult(**kwargs)
+
+
+def test_backup_job_alerts_when_the_snapshot_fails(monkeypatch):
+    """A silently failing backup is worse than none: it buys false confidence."""
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(sched, "save_notification", lambda *a, **k: None)
+    monkeypatch.setattr(
+        sched, "send_push_to_all", lambda s, title, body, url="/": sent.append((title, body))
+    )
     monkeypatch.setattr(
         "moroccan_stock_intelligence.services.backup.run_backup",
-        lambda **k: module.BackupResult(
-            path=Path("data/backups/market-x.db.gz"),
-            size_bytes=1024,
-            integrity_ok=True,
-            shipped=False,
-            ship_error="Archive trop volumineuse",
-        ),
+        lambda **k: _backup_result(error="base illisible"),
     )
 
-    sched._backup_job()
+    sched._backup_job(_fake_factory)
 
     assert len(sent) == 1
-    assert "hors-hôte" in sent[0]
+    title, body = sent[0]
+    assert "ÉCHOUÉE" in title
+    assert "base illisible" in body
 
 
 def test_backup_job_is_silent_on_success(monkeypatch):
     """Success must not notify: a nightly 'backup ok' would train the owner to ignore it."""
-    sent: list[str] = []
-    monkeypatch.setattr(sched, "send_telegram_message", lambda msg, **k: sent.append(msg))
-    module = __import__(
-        "moroccan_stock_intelligence.services.backup", fromlist=["BackupResult"]
+    sent: list = []
+    monkeypatch.setattr(sched, "save_notification", lambda *a, **k: None)
+    monkeypatch.setattr(
+        sched, "send_push_to_all", lambda *a, **k: sent.append(a)
     )
     monkeypatch.setattr(
         "moroccan_stock_intelligence.services.backup.run_backup",
-        lambda **k: module.BackupResult(
+        lambda **k: _backup_result(
             path=Path("data/backups/market-x.db.gz"),
             size_bytes=1024,
             integrity_ok=True,
-            shipped=True,
         ),
     )
 
-    sched._backup_job()
+    sched._backup_job(_fake_factory)
 
     assert sent == []
 
 
+def test_backup_job_reports_a_skip_too(monkeypatch):
+    """A skipped backup is still a day without a verified copy — say so.
+
+    `skipped_reason` means "we did not try" (wrong backend, missing file). That is
+    normal as a category but not as an outcome: the owner still has no snapshot
+    for today, which is the thing worth knowing.
+    """
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(sched, "save_notification", lambda *a, **k: None)
+    monkeypatch.setattr(
+        sched, "send_push_to_all", lambda s, title, body, url="/": sent.append((title, body))
+    )
+    monkeypatch.setattr(
+        "moroccan_stock_intelligence.services.backup.run_backup",
+        lambda **k: _backup_result(skipped_reason="La base n'est pas SQLite"),
+    )
+
+    sched._backup_job(_fake_factory)
+
+    assert len(sent) == 1
+    assert "SQLite" in sent[0][1]
+
+
+def test_backup_job_survives_a_failing_notification(monkeypatch):
+    """Reporting the failure must not become a second, louder failure."""
+    monkeypatch.setattr(sched, "save_notification", lambda *a, **k: None)
+    monkeypatch.setattr(
+        sched,
+        "send_push_to_all",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("push endpoint down")),
+    )
+    monkeypatch.setattr(
+        "moroccan_stock_intelligence.services.backup.run_backup",
+        lambda **k: _backup_result(error="base illisible"),
+    )
+
+    sched._backup_job(_fake_factory)  # must not raise
+
+
 def test_backup_job_never_raises(monkeypatch):
     """One crashing job must not take the scheduler thread down with it."""
-    monkeypatch.setattr(sched, "send_telegram_message", lambda *a, **k: None)
     monkeypatch.setattr(
         "moroccan_stock_intelligence.services.backup.run_backup",
         lambda **k: (_ for _ in ()).throw(RuntimeError("disk on fire")),
     )
-    sched._backup_job()  # must not raise
+    sched._backup_job(_fake_factory)  # must not raise

@@ -3,22 +3,24 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-import requests
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from moroccan_stock_intelligence.config import settings
-from moroccan_stock_intelligence.models import Alert, Stock
-from moroccan_stock_intelligence.repository import create_alert_once
+from moroccan_stock_intelligence.models import Stock
+from moroccan_stock_intelligence.repository import create_alert_once, save_notification
 from moroccan_stock_intelligence.services.analytics import MetricSet
 from moroccan_stock_intelligence.services.digest import (
     build_urgent_alert,
     build_urgent_favorite_alert,
+    build_urgent_favorite_push_payload,
+    build_urgent_push_payload,
+    html_to_text,
 )
 from moroccan_stock_intelligence.services.favorites import evaluate_favorite
 from moroccan_stock_intelligence.services.portfolio import Portfolio, evaluate_holding
+from moroccan_stock_intelligence.services.push import send_push_to_all
 from moroccan_stock_intelligence.services.scoring import ScoreResult
-from moroccan_stock_intelligence.services.telegram import send_telegram_message
 
 LOG = logging.getLogger(__name__)
 
@@ -31,26 +33,11 @@ LOG = logging.getLogger(__name__)
 # scheduler.py already recorded the intent ("the old event-based analysis alerts
 # used to fire here. They are gone"); the writes just outlived it. Per-symbol
 # notification is thesis-based now and owned by research/notifications.
-
-
-def dispatch_unsent_alerts(session: Session) -> int:
-    if not settings.telegram_bot_token or not settings.telegram_chat_id:
-        LOG.warning("telegram_credentials_missing dispatch_skipped=true")
-        return 0
-
-    count = 0
-    alerts = session.scalars(select(Alert).where(Alert.sent == 0).order_by(Alert.created_at)).all()
-    for alert in alerts:
-        try:
-            sent = send_telegram_message(alert.message)
-        except requests.RequestException as exc:
-            LOG.error("telegram_send_failed alert_id=%s error=%s", alert.id, exc)
-            continue
-        if sent:
-            alert.sent = 1
-            count += 1
-    session.commit()
-    return count
+#
+# `dispatch_unsent_alerts` also lived here: it drained every unsent row in `alerts`
+# to Telegram. It went out with Telegram itself and has no push equivalent by
+# design — the two dispatchers below own their own delivery and mark their own
+# rows, so a generic drain would only ever have re-sent what they already sent.
 
 
 def dispatch_urgent_holding_alerts(
@@ -59,15 +46,14 @@ def dispatch_urgent_holding_alerts(
     metrics: list[MetricSet],
     scores: dict[str, ScoreResult],
 ) -> int:
-    """Send an immediate Telegram alert when a HELD stock crashes intraday.
+    """Push an immediate alert when a HELD stock crashes intraday.
 
     Deduplicated to once per symbol per day via the alerts table, so the hourly
     intraday watch never spams the same crash twice.
-    """
-    if not settings.telegram_bot_token or not settings.telegram_chat_id:
-        LOG.warning("telegram_credentials_missing urgent_dispatch_skipped=true")
-        return 0
 
+    Delivery is web push plus the in-app inbox: the push is the interruption, the
+    inbox row is the record that survives a dismissed notification.
+    """
     metrics_by_symbol = {metric.symbol: metric for metric in metrics}
     stocks = {stock.symbol: stock for stock in session.scalars(select(Stock)).all()}
     now_key = datetime.now(UTC).strftime("%Y-%m-%d")
@@ -94,13 +80,15 @@ def dispatch_urgent_holding_alerts(
         if alert is None:
             continue  # already alerted today
         try:
-            sent = send_telegram_message(message, parse_mode="HTML")
-        except requests.RequestException as exc:
-            LOG.error("urgent_alert_send_failed symbol=%s error=%s", holding.symbol, exc)
+            title, body = build_urgent_push_payload(evaluation)
+            save_notification(session, "urgent", title, html_to_text(message))
+            send_push_to_all(session, title, body, "/")
+        except Exception:  # noqa: BLE001 - one symbol must not sink the watch
+            LOG.exception("urgent_alert_send_failed symbol=%s", holding.symbol)
+            session.rollback()
             continue
-        if sent:
-            alert.sent = 1
-            count += 1
+        alert.sent = 1
+        count += 1
 
     session.commit()
     return count
@@ -113,19 +101,15 @@ def dispatch_urgent_favorite_alerts(
     metrics: list[MetricSet],
     scores: dict[str, ScoreResult],
 ) -> int:
-    """Send an immediate Telegram alert when a WATCHED (favorited) stock crashes intraday.
+    """Push an immediate alert when a WATCHED (favorited) stock crashes intraday.
 
     The favorites list and the portfolio are independent, so a symbol can be in both.
     When it is, we stay silent here: `dispatch_urgent_holding_alerts` has already sent
-    the richer message (with the P/L and the SELL/HOLD advice), and sending a second
-    Telegram for the same crash on the same stock would be pure noise.
+    the richer message (with the P/L and the SELL/HOLD advice), and pushing a second
+    notification for the same crash on the same stock would be pure noise.
 
     Deduplicated once per symbol per day via the alerts table, like the holding alert.
     """
-    if not settings.telegram_bot_token or not settings.telegram_chat_id:
-        LOG.warning("telegram_credentials_missing favorite_dispatch_skipped=true")
-        return 0
-
     held = {holding.symbol for holding in portfolio.holdings}
     metrics_by_symbol = {metric.symbol: metric for metric in metrics}
     stocks = {stock.symbol: stock for stock in session.scalars(select(Stock)).all()}
@@ -156,13 +140,15 @@ def dispatch_urgent_favorite_alerts(
         if alert is None:
             continue  # already alerted today
         try:
-            sent = send_telegram_message(message, parse_mode="HTML")
-        except requests.RequestException as exc:
-            LOG.error("urgent_favorite_alert_send_failed symbol=%s error=%s", symbol, exc)
+            title, body = build_urgent_favorite_push_payload(evaluation)
+            save_notification(session, "urgent", title, html_to_text(message))
+            send_push_to_all(session, title, body, "/")
+        except Exception:  # noqa: BLE001 - one symbol must not sink the watch
+            LOG.exception("urgent_favorite_alert_send_failed symbol=%s", symbol)
+            session.rollback()
             continue
-        if sent:
-            alert.sent = 1
-            count += 1
+        alert.sent = 1
+        count += 1
 
     session.commit()
     return count

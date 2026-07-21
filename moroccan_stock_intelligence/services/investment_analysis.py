@@ -50,9 +50,8 @@ DISCLAIMER = (
     "Cours différés ~15 min."
 )
 
-# Intelligent-notification rules (push + in-app inbox only; Telegram stays the
-# digests' channel so nothing doubles). All deduplicated once/symbol/day via
-# the alerts table, hard-capped per scheduled run.
+# Intelligent-notification rules (push + in-app inbox). All deduplicated
+# once/symbol/day via the alerts table, hard-capped per scheduled run.
 MAX_AI_PUSHES_PER_RUN = 3
 AI_OPPORTUNITY_SCORE = 72
 AI_OPPORTUNITY_CONFIDENCE = 55

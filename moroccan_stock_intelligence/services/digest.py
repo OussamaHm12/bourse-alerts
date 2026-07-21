@@ -314,8 +314,40 @@ def build_push_payload(
 
 
 def html_to_text(message: str) -> str:
-    """Strip the Telegram HTML formatting so the same content is readable in-app."""
+    """Strip the rich-text markup so the same content is readable in the in-app inbox.
+
+    The builders above emit a small HTML subset (<b>, <i>, <code>) because the inbox
+    stores plain text while the messages are composed once and reused. This is the
+    one conversion point.
+    """
     return html.unescape(re.sub(r"<[^>]+>", "", message)).strip()
+
+
+def build_urgent_push_payload(holding: HoldingEvaluation) -> tuple[str, str]:
+    """Short (title, body) for the crash alert on a HELD position.
+
+    The full block from `build_urgent_alert` goes to the in-app inbox; a push
+    notification is read on a lock screen, so it carries only what decides whether
+    to open the app: how far it fell, what it costs, and the advice.
+    """
+    title = f"🚨 {holding.symbol} {_signed(holding.daily_variation, 2)}%"
+    body = (
+        f"{_num(holding.current_price)} MAD · "
+        f"P/L net {_signed(holding.net_pl)} MAD ({_signed(holding.net_pl_pct, 1)}%) · "
+        f"{ADVICE_LABEL[holding.advice]}"
+    )
+    return title, body
+
+
+def build_urgent_favorite_push_payload(favorite: FavoriteEvaluation) -> tuple[str, str]:
+    """Short (title, body) for the crash alert on a WATCHED stock.
+
+    No P/L line — we hold none of it. The score is what makes the drop actionable.
+    """
+    title = f"⭐ {favorite.symbol} {_signed(favorite.daily_variation, 2)}%"
+    score = "n/a" if favorite.buy_score is None else f"{favorite.buy_score:.0f}/100"
+    body = f"{_num(favorite.price)} MAD · score {score} — {favorite.label}"
+    return title, body
 
 
 def build_urgent_favorite_alert(favorite: FavoriteEvaluation) -> str:

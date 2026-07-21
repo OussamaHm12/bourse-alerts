@@ -5,7 +5,7 @@ P/L and never a SELL/HOLD advice. What a favorite buys is *attention*:
 
   * the urgent intraday crash alert (previously reserved to held positions)
   * priority on the capped thesis-change pushes
-  * its own section in the Telegram/push digest
+  * its own section in the digest
   * its own tab in the app
 
 The two lists are independent by design (holding a stock does not favorite it), so
@@ -121,7 +121,7 @@ def sort_by_score(evaluations: list[FavoriteEvaluation]) -> list[FavoriteEvaluat
     across runs instead of wobbling with dict iteration.
 
     Urgency is NOT encoded here. A crashing favorite is surfaced by its own channels:
-    the immediate Telegram alert, and the ⚠️ line the intraday digest gives to
+    the immediate crash push, and the ⚠️ line the intraday digest gives to
     anything moving 5% or more.
     """
 

@@ -118,16 +118,12 @@ def test_a_dead_refresh_releases_the_slot_instead_of_wedging_the_app():
 # --------------------------------------------------------------------------- #
 
 def test_refresh_collects_and_never_notifies(factory, monkeypatch):
-    """Opening the app must not Telegram or push the owner. This is the whole reason
-    the refresh path exists instead of reusing the digest job."""
+    """Opening the app must not push the owner. This is the whole reason the
+    refresh path exists instead of reusing the digest job."""
     from moroccan_stock_intelligence.schemas import StockSnapshot
     from moroccan_stock_intelligence.services import collector
 
     sent: list = []
-    monkeypatch.setattr(
-        "moroccan_stock_intelligence.services.telegram.send_telegram_message",
-        lambda *a, **k: sent.append(a) or True,
-    )
     monkeypatch.setattr(
         "moroccan_stock_intelligence.services.push.send_push_to_all",
         lambda *a, **k: sent.append(a) or 1,

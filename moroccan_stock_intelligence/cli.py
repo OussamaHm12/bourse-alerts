@@ -10,18 +10,20 @@ from moroccan_stock_intelligence.config import settings
 from moroccan_stock_intelligence.db import get_engine, get_session_factory, init_db
 from moroccan_stock_intelligence.logging_config import configure_logging
 from moroccan_stock_intelligence.models import Stock
-from moroccan_stock_intelligence.repository import store_news
-from moroccan_stock_intelligence.services.alerts import (
-    build_daily_summary,
-    dispatch_unsent_alerts,
-)
+from moroccan_stock_intelligence.repository import save_notification, store_news
+from moroccan_stock_intelligence.services.alerts import build_daily_summary
 from moroccan_stock_intelligence.services.alerts import dispatch_urgent_holding_alerts
 from moroccan_stock_intelligence.services.collector import (
     collect_market_snapshots,
     persist_snapshots,
 )
 from moroccan_stock_intelligence.services.backup import render_result, run_backup
-from moroccan_stock_intelligence.services.digest import build_digest, build_intraday_update
+from moroccan_stock_intelligence.services.digest import (
+    build_digest,
+    build_intraday_update,
+    build_push_payload,
+    html_to_text,
+)
 from moroccan_stock_intelligence.services.market_state import compute_state
 from moroccan_stock_intelligence.services.news import collect_news
 from moroccan_stock_intelligence.services.news_backfill import (
@@ -32,7 +34,7 @@ from moroccan_stock_intelligence.services.news_backfill import (
     render_report,
 )
 from moroccan_stock_intelligence.services.portfolio import evaluate_portfolio, load_portfolio
-from moroccan_stock_intelligence.services.telegram import send_telegram_message
+from moroccan_stock_intelligence.services.push import send_push_to_all
 
 LOG = logging.getLogger(__name__)
 
@@ -43,7 +45,6 @@ def main(argv: list[str] | None = None) -> None:
     subparsers.add_parser("init-db")
     subparsers.add_parser("collect")
     subparsers.add_parser("analyze")
-    subparsers.add_parser("send-alerts")
     subparsers.add_parser("daily-summary")
     subparsers.add_parser("morning-digest")
     subparsers.add_parser("afternoon-digest")
@@ -86,10 +87,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     backup_parser = subparsers.add_parser(
         "backup",
-        help="snapshot the database, verify it, compress it, and ship it off-host",
-    )
-    backup_parser.add_argument(
-        "--no-ship", action="store_true", help="keep the snapshot local (skip Telegram)"
+        help="snapshot the database, verify it, compress it, and rotate old copies",
     )
     backup_parser.add_argument(
         "--keep", type=int, default=None, help="how many snapshots to retain (default: BACKUP_KEEP)"
@@ -194,9 +192,6 @@ def main(argv: list[str] | None = None) -> None:
             persist_snapshots(session, snapshots)
         elif command == "analyze":
             run_analysis(session)
-        elif command == "send-alerts":
-            sent = dispatch_unsent_alerts(session)
-            LOG.info("alerts_dispatched count=%s", sent)
         elif command == "daily-summary":
             run_daily_summary(session)
         elif command == "morning-digest":
@@ -227,7 +222,7 @@ def main(argv: list[str] | None = None) -> None:
             tally = backfill_history(session, symbols=args.symbols, limit=args.limit)
             LOG.info("history_backfilled %s", tally)
         elif command == "backup":
-            run_backup_command(ship=not args.no_ship, keep=args.keep)
+            run_backup_command(keep=args.keep)
         elif command == "migrate":
             run_migrate(target=args.to, sql_only=args.sql)
         elif command == "migrate-status":
@@ -362,14 +357,14 @@ def run_copy_database(*, source: str | None, target: str) -> None:
         raise SystemExit(1)
 
 
-def run_backup_command(*, ship: bool, keep: int | None) -> None:
+def run_backup_command(*, keep: int | None) -> None:
     """Snapshot the database. Exits non-zero if the snapshot is not verifiable.
 
     A failed integrity check exits 1 on purpose: this command is meant to be the
     gate in front of any destructive operation, and a gate that always opens is
     not a gate.
     """
-    result = run_backup(ship=ship, keep=keep)
+    result = run_backup(keep=keep)
     print(render_result(result))
     if result.skipped_reason or not result.ok:
         raise SystemExit(1)
@@ -526,7 +521,8 @@ def run_analysis(session) -> dict[str, object]:  # noqa: ANN001
 def run_daily_summary(session) -> None:  # noqa: ANN001
     result = run_analysis(session)
     message = build_daily_summary(result["metrics"], result["scores"])  # type: ignore[arg-type]
-    send_telegram_message(message)
+    save_notification(session, "digest", "Résumé quotidien", message)
+    session.commit()
     LOG.info("daily_summary_complete")
 
 
@@ -541,7 +537,9 @@ def run_digest(session, period_label: str) -> None:  # noqa: ANN001
     metrics_by_symbol = {metric.symbol: metric for metric in metrics}  # type: ignore[union-attr]
     holdings = evaluate_portfolio(portfolio, metrics_by_symbol, scores)  # type: ignore[arg-type]
     message = build_digest(period_label, metrics, scores, holdings, portfolio)  # type: ignore[arg-type]
-    send_telegram_message(message, parse_mode="HTML")
+    save_notification(session, "digest", period_label, html_to_text(message))
+    title, body = build_push_payload(period_label, holdings)
+    send_push_to_all(session, title, body, "/")
     LOG.info("digest_sent period=%s holdings=%s", period_label, len(holdings))
 
 
@@ -557,7 +555,9 @@ def run_intraday_update(session, period_label: str) -> None:  # noqa: ANN001
     holdings = evaluate_portfolio(portfolio, metrics_by_symbol, scores)  # type: ignore[arg-type]
     dispatch_urgent_holding_alerts(session, portfolio, metrics, scores)  # type: ignore[arg-type]
     message = build_intraday_update(period_label, metrics, scores, holdings, portfolio)  # type: ignore[arg-type]
-    send_telegram_message(message, parse_mode="HTML")
+    save_notification(session, "intraday", period_label, html_to_text(message))
+    title, body = build_push_payload(period_label, holdings)
+    send_push_to_all(session, title, body, "/")
     LOG.info("intraday_update_sent period=%s holdings=%s", period_label, len(holdings))
 
 

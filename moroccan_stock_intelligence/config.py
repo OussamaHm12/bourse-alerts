@@ -12,8 +12,6 @@ load_dotenv()
 @dataclass(frozen=True)
 class Settings:
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///data/market.db")
-    telegram_bot_token: str | None = os.getenv("TELEGRAM_BOT_TOKEN")
-    telegram_chat_id: str | None = os.getenv("TELEGRAM_CHAT_ID")
     http_timeout_seconds: float = float(os.getenv("HTTP_TIMEOUT_SECONDS", "20"))
     http_retries: int = int(os.getenv("HTTP_RETRIES", "3"))
     http_verify_ssl: bool = os.getenv("HTTP_VERIFY_SSL", "true").lower() not in {"0", "false", "no"}
@@ -22,8 +20,8 @@ class Settings:
     ).lower() in {"1", "true", "yes"}
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     min_opportunity_score: float = float(os.getenv("MIN_OPPORTUNITY_SCORE", "80"))
-    # Lower threshold used only for the BUY-score recap shown in the Telegram/push
-    # digest. Kept below min_opportunity_score so the recap stays informative without
+    # Lower threshold used only for the BUY-score recap shown in the digest.
+    # Kept below min_opportunity_score so the recap stays informative without
     # firing individual opportunity alerts.
     opportunity_recap_score: float = float(os.getenv("OPPORTUNITY_RECAP_SCORE", "60"))
 
@@ -98,20 +96,11 @@ class Settings:
     # --- Backups ---
     # The database is the one thing here that cannot be rebuilt: the history API
     # only re-serves a ~3-year rolling window, so anything older is gone with the
-    # volume. Local copies answer logical damage; the Telegram copy answers losing
-    # the volume itself — using credentials that already exist, per the project's
-    # "no new infrastructure" constraint.
+    # volume. These copies answer LOGICAL damage (bad backfill, botched migration)
+    # only — they sit on that same volume, so losing it loses them too. There is
+    # no off-host copy since Telegram was removed; see services/backup.py.
     backup_dir: str = os.getenv("BACKUP_DIR", "data/backups")
     backup_keep: int = int(os.getenv("BACKUP_KEEP", "7"))
-    backup_to_telegram: bool = os.getenv("BACKUP_TO_TELEGRAM", "true").lower() not in {
-        "0",
-        "false",
-        "no",
-    }
-    # Telegram refuses bot uploads above ~50 MB; stay clearly under it.
-    backup_max_upload_mb: float = float(os.getenv("BACKUP_MAX_UPLOAD_MB", "45"))
-    # Uploading megabytes needs far more headroom than scraping a page (20 s).
-    backup_upload_timeout_seconds: float = float(os.getenv("BACKUP_UPLOAD_TIMEOUT_SECONDS", "180"))
 
     # --- Learning engine (Phase 3) ---
     # Horizon -> days after which a prediction becomes falsifiable.

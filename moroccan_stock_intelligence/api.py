@@ -387,7 +387,7 @@ def push_test(request: Request) -> dict:
 
 @app.post("/api/run-now")
 async def run_now(request: Request, background_tasks: BackgroundTasks) -> dict:
-    """Manually trigger a collect + analyze + NOTIFY run (Telegram digest + push).
+    """Manually trigger a collect + analyze + NOTIFY run (digest push + inbox).
 
     This is the "send me a digest now" action. For merely bringing the data up to
     date — what opening the app does — use /api/refresh, which is silent.
@@ -402,8 +402,8 @@ async def run_now(request: Request, background_tasks: BackgroundTasks) -> dict:
 
 # ---- On-open refresh: collect + recompute, silently ------------------------
 # Called when the app launches, so the owner never looks at stale numbers. It does
-# NOT notify: firing the digest job on every launch would Telegram + push the owner
-# several times a day for nothing.
+# NOT notify: firing the digest job on every launch would push the owner several
+# times a day for nothing.
 
 
 @app.post("/api/refresh")

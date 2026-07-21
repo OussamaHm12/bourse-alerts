@@ -202,7 +202,7 @@ def test_equal_scores_break_on_the_symbol_so_the_order_is_stable():
 
 def test_a_crash_no_longer_jumps_the_queue_but_still_leads_its_headline():
     """Ordering is by score now. Urgency did not disappear: the crashing favorite
-    still gets its own Telegram alert and its ⚠️ line in the intraday digest."""
+    still gets its own crash push and its ⚠️ line in the intraday digest."""
     crashing = evaluate_favorite("CRSH", _metric(symbol="CRSH", daily_variation=-7.0), None)
     strong = evaluate_favorite("TOP", _metric(symbol="TOP"), score_opportunity(_metric()))
 
@@ -282,16 +282,17 @@ def test_favorites_payload_is_ordered_by_score(session):
 # The de-duplication rule: held AND favorited crashes exactly once.             #
 # --------------------------------------------------------------------------- #
 
-def _telegram_enabled(monkeypatch, module, sent: list):
-    from dataclasses import replace
+def _capture_pushes(monkeypatch, module, sent: list):
+    """Record every push the module would send, instead of sending it.
 
-    from moroccan_stock_intelligence.config import settings as real
-
+    Captures (title, body) because the title is what distinguishes a holding
+    alert (🚨, carries P/L) from a favorite alert (⭐, no position held) — which
+    is exactly what the de-duplication rule below is about.
+    """
     monkeypatch.setattr(
-        module, "settings", replace(real, telegram_bot_token="tok", telegram_chat_id="chat")
-    )
-    monkeypatch.setattr(
-        module, "send_telegram_message", lambda msg, **kw: sent.append(msg) or True
+        module,
+        "send_push_to_all",
+        lambda session, title, body, url="/": sent.append((title, body)) or 1,
     )
 
 
@@ -303,8 +304,8 @@ def test_a_stock_both_held_and_favorited_is_alerted_once_as_a_holding(session, m
     add_favorite(session, "ATW")
     session.commit()
 
-    sent: list[str] = []
-    _telegram_enabled(monkeypatch, alerts, sent)
+    sent: list[tuple[str, str]] = []
+    _capture_pushes(monkeypatch, alerts, sent)
 
     metric = _metric(daily_variation=-6.0)
     scores = {"ATW": score_opportunity(metric)}
@@ -320,7 +321,9 @@ def test_a_stock_both_held_and_favorited_is_alerted_once_as_a_holding(session, m
     assert held_alerts == 1
     assert favorite_alerts == 0  # skipped: the holding alert already covered it
     assert len(sent) == 1
-    assert "ALERTE FAVORI" not in sent[0]  # the holding message won, P/L and all
+    title, body = sent[0]
+    assert title.startswith("🚨")  # the holding alert won, P/L and all
+    assert "P/L net" in body
 
 
 def test_a_favorited_stock_we_do_not_own_still_gets_its_crash_alert(session, monkeypatch):
@@ -330,8 +333,8 @@ def test_a_favorited_stock_we_do_not_own_still_gets_its_crash_alert(session, mon
     add_favorite(session, "ATW")
     session.commit()
 
-    sent: list[str] = []
-    _telegram_enabled(monkeypatch, alerts, sent)
+    sent: list[tuple[str, str]] = []
+    _capture_pushes(monkeypatch, alerts, sent)
 
     metric = _metric(daily_variation=-6.0)
     scores = {"ATW": score_opportunity(metric)}
@@ -339,7 +342,9 @@ def test_a_favorited_stock_we_do_not_own_still_gets_its_crash_alert(session, mon
 
     assert alerts.dispatch_urgent_favorite_alerts(session, ["ATW"], empty, [metric], scores) == 1
     assert len(sent) == 1
-    assert "ALERTE FAVORI" in sent[0]
+    title, body = sent[0]
+    assert title.startswith("⭐")
+    assert "P/L" not in body  # we hold none of it — a P/L line would be a lie
 
     # Same crash, same day, second run: deduplicated by the alerts table.
     assert alerts.dispatch_urgent_favorite_alerts(session, ["ATW"], empty, [metric], scores) == 0

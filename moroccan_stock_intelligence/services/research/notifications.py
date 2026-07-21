@@ -15,8 +15,8 @@ hard-capped per run):
   * risk rose materially                            (same view, worse odds)
   * fresh negative news on a HELD position          (the thesis is under attack)
 
-Everything else stays silent. Telegram is untouched — the digests own that
-channel; these go to web push + the in-app inbox.
+Everything else stays silent. These go to web push + the in-app inbox, like every
+other notification in the project.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 # Moroccan Stock Intelligence Platform
 
-Production-oriented Python platform for collecting Casablanca Stock Exchange market snapshots, storing history, computing opportunity signals and multi-analyst investment reports, sending Telegram digests and web-push alerts, and serving an installable PWA.
+Production-oriented Python platform for collecting Casablanca Stock Exchange market snapshots, storing history, computing opportunity signals and multi-analyst investment reports, sending web-push alerts, and serving an installable PWA.
 
 This project is for market intelligence and notifications only. It does not place trades, route orders, or provide investment advice.
 
@@ -29,7 +29,7 @@ would be a schema change rather than a flag.
 - Scores opportunities from 0 to 100 with component explanations, a coverage figure and a confidence.
 - Collects official Casablanca Bourse announcements and links them to known symbols when possible.
 - **Requires a password.** Every route except the healthcheck and the login endpoints needs a session (`AUTH_PASSWORD`). See [Authentication](#authentication).
-- Sends two full Telegram digests per trading day, at **09:00 and 17:00** Morocco time:
+- Sends two full digests per trading day, at **09:00 and 17:00** Morocco time (web push + the in-app inbox):
   - your portfolio: current value, net profit/loss after **both** commissions (buy and sell), and a SELL/HOLD advice per position
   - a market recap: top movers, unusual volume, and the BUY-score opportunities (top pick detailed + Top 5 with score >= 60)
 - Sends a lightweight intraday update during the session (**11:00, 13:00 and 15:00** Morocco):
@@ -74,8 +74,8 @@ recomputing per request.
 │       │                          #   knowledge, thesis store, notifications
 │       ├── synthesis/             # deterministic template + optional Claude
 │       ├── portfolio.py  favorites.py
-│       ├── backup.py              # nightly verified snapshot, shipped off-host
-│       ├── digest.py  alerts.py  push.py  telegram.py  refresh.py  views.py
+│       ├── backup.py              # nightly verified snapshot (local volume only)
+│       ├── digest.py  alerts.py  push.py  refresh.py  views.py
 │       └── investment_analysis.py # explainable composition for /api/analysis/*
 ├── webapp_flutter/                # the compiled PWA that ships (source: flutter_app/)
 ├── tests/
@@ -109,7 +109,7 @@ Tables are defined in [models.py](moroccan_stock_intelligence/models.py):
 - `stocks`: symbol, company name, sector, source metadata.
 - `prices`: every market snapshot with price, variation, volume, traded quantity, market cap, highs/lows, raw payload.
 - `signals`: analytics events and score explanations.
-- `alerts`: de-duplicated alert events and Telegram delivery state.
+- `alerts`: de-duplicated alert events and their delivery state.
 - `news`: official announcements, event type, sentiment, impact score, optional linked stock.
 
 Default local database:
@@ -145,8 +145,6 @@ py -3 -m moroccan_stock_intelligence.cli run-once
 Environment variables:
 
 ```text
-TELEGRAM_BOT_TOKEN=123456789:replace_with_your_bot_token
-TELEGRAM_CHAT_ID=123456789
 DATABASE_URL=sqlite:///data/market.db
 HTTP_TIMEOUT_SECONDS=20
 HTTP_RETRIES=3
@@ -263,34 +261,6 @@ at `GET /api/admin/system-status`.
 This exists because a scraper that returns 200 with an empty list looks exactly
 like one that works.
 
-## Telegram Setup
-
-1. Create a bot:
-   - Open Telegram and message `@BotFather`.
-   - Run `/newbot`.
-   - Copy the bot token.
-
-2. Get your chat ID:
-   - Send a message to the bot.
-   - Open:
-
-```text
-https://api.telegram.org/bot<TOKEN>/getUpdates
-```
-
-   - Copy `chat.id`.
-
-3. Set the environment variables on the deployed service (Railway):
-   - `TELEGRAM_BOT_TOKEN`
-   - `TELEGRAM_CHAT_ID`
-
-   Set them in **exactly one** place. The deployed service is the only sender —
-   see [Notifications: one source of truth](#notifications-one-source-of-truth).
-
-4. Test manually:
-   - Open the app and use the "run now" button, or
-   - `python -m moroccan_stock_intelligence.cli daily-summary` against the same database.
-
 ## CLI
 
 ```bash
@@ -304,14 +274,13 @@ python -m moroccan_stock_intelligence.cli daily-summary
 python -m moroccan_stock_intelligence.cli run-once
 ```
 
-- `morning-digest` / `afternoon-digest`: collect, analyze, and send one consolidated Telegram
-  digest (portfolio advice + market summary). These are the only two scheduled notifications.
-- `watch-holdings`: collect and analyze, then send an urgent Telegram alert **only** if a stock
-  you own crashed `URGENT_CRASH_PCT` or more today (deduplicated to once per symbol per day).
-- `run-once`: collects prices, stores them, collects news, and computes signals. It no longer
-  pushes Telegram messages, so it is safe for ad-hoc local runs.
-- `send-alerts`: manual retry for alerts whose Telegram send failed (they stay `sent=0`). Nothing
-  schedules it; live alerts send immediately and mark themselves sent.
+- `morning-digest` / `afternoon-digest`: collect, analyze, and send one consolidated digest
+  (portfolio advice + market summary) as a web push plus an in-app inbox entry. These are the
+  only two scheduled notifications.
+- `watch-holdings`: collect and analyze, then push an urgent alert **only** if a stock you own
+  crashed `URGENT_CRASH_PCT` or more today (deduplicated to once per symbol per day).
+- `run-once`: collects prices, stores them, collects news, and computes signals. It sends no
+  notification, so it is safe for ad-hoc local runs.
 
 Diagnostics and maintenance:
 
@@ -331,8 +300,8 @@ deployment or a destructive operation.
 
 ## Notifications: one source of truth
 
-**The deployed service is the only sender.** Its in-process scheduler owns every Telegram digest,
-every push, and every alert. Nothing else may hold `TELEGRAM_BOT_TOKEN`.
+**The deployed service is the only sender.** Its in-process scheduler owns every digest, every
+push, and every alert. Nothing else may hold `VAPID_PRIVATE_KEY`.
 
 This used to be split. A `.github/workflows/stock-alert.yml` cron also sent digests (10:00 / 16:00
 Morocco) while the scheduler sent its own (09:00 / 17:00) — four digests a day. Worse than the
@@ -341,15 +310,15 @@ the GitHub Actions cache. Its history depth had nothing to do with production's,
 scores and confidences were structurally different, and the two channels could contradict each other
 about the same stock on the same day. The workflow was removed for that reason — not for tidiness.
 
-If you ever reintroduce a second scheduled runner, give it its own read-only job. Do not give it the
-bot token.
+If you ever reintroduce a second scheduled runner, give it its own read-only job. Do not give it
+the push signing key. `tests/test_scheduler_jobs.py` fails the suite if a workflow file carries one.
 
 Schedule (Africa/Casablanca, weekdays unless noted) — see [scheduler.py](moroccan_stock_intelligence/scheduler.py):
 
 | Time | Job |
 | --- | --- |
 | 07:30 | `macro_collect` (Bank Al-Maghrib) |
-| 09:00 | `morning_digest` — collect + news + analyze + Telegram + push |
+| 09:00 | `morning_digest` — collect + news + analyze + push |
 | 11:00, 13:00, 15:00 | `intraday_update` — light refresh + crash safety net |
 | 17:00 | `closing_digest` |
 | 18:00 | `research_reports` — multi-analyst reports |
@@ -368,13 +337,21 @@ only a ~3-year rolling window, so anything older than that which is lost is lost
    API share the database and a `cp` of a live file can capture a torn page);
 2. verifies the copy with `PRAGMA integrity_check` — an unverified backup is not a backup;
 3. gzips it (~9x on real data);
-4. ships it to Telegram, off-host, using the credentials that already exist;
-5. rotates local copies, keeping `BACKUP_KEEP` (default 7).
+4. rotates local copies, keeping `BACKUP_KEEP` (default 7).
 
-Local copies answer logical damage (a bad backfill, a hand-run `UPDATE`). The Telegram copy answers
-losing the volume itself. Shipping is best-effort: if it fails, the verified local snapshot still
-stands and you get a warning — but a local-only backup leaves the real risk uncovered, so do not
-ignore that warning.
+**These copies live on the same volume as the database.** They answer logical damage — a bad
+backfill, a hand-run `UPDATE`, a botched migration — and nothing else. They do **not** survive
+losing the volume.
+
+There is no off-host copy. An earlier version shipped each snapshot to Telegram; Telegram was
+removed from the project and nothing replaced it. That leaves one real gap, stated plainly because
+it is the kind you discover at the worst moment:
+
+> If the Railway volume is lost, the backups go with it — and the upstream history endpoint cannot
+> re-serve séances older than ~3 years, so that history is gone permanently.
+
+Until an off-host target exists (S3/R2, a second host), the disaster plan is to download
+`data/backups/` yourself, periodically. It only works if somebody actually does it.
 
 On demand, and **before any destructive operation**:
 
@@ -468,7 +445,7 @@ Scoring (weighted mean of the AVAILABLE components only — see
   (pas de fausse certitude construite sur un seul indicateur)
 - confidence = 50·couverture + 30·min(historique/cible, 1) + 20·cohérence (cibles 30/90/250 j)
 
-Intelligent notifications (web push + in-app inbox only, Telegram untouched):
+Intelligent notifications (web push + in-app inbox):
 held position with SELL advice or risk ≥ 70, fresh negative news on a holding,
 or a new short-term opportunity (score ≥ 72, confidence ≥ 55, risk < 60).
 Deduplicated once per symbol per day, max 3 per scheduled run.
@@ -483,7 +460,7 @@ docker compose up -d webapp   # serves on :8000 behind your HTTPS reverse proxy
 ```
 
 - **Managed (simplest)**: Railway / Fly.io / Render give an `https://…` URL out of the box —
-  push the repo, set the env vars (`VAPID_*`, `TELEGRAM_*`, `PORTFOLIO_JSON`, `TIMEZONE`), done.
+  push the repo, set the env vars (`VAPID_*`, `PORTFOLIO_JSON`, `TIMEZONE`), done.
 - **VPS / Raspberry Pi**: run the container and put **Caddy** in front for automatic Let's Encrypt
   HTTPS, or expose it through a **Cloudflare Tunnel**.
 
@@ -565,7 +542,7 @@ A favorite is deliberately **not** a holding: it carries no quantity and no buy 
 so it has no P/L and never produces a SELL/HOLD advice. What it buys is *attention*:
 
 - **Urgent crash alert.** A favorite falling `URGENT_CRASH_PCT` (-5% by default) intraday
-  triggers an immediate Telegram alert, exactly like a held position — minus the P/L block.
+  triggers an immediate push alert, exactly like a held position — minus the P/L block.
 - **Priority on thesis notifications.** Thesis-change pushes are capped at 3 per run
   (`MAX_PUSHES_PER_RUN`). Favorites are evaluated first, so a change on a stock you watch
   is never crowded out by one on a stock you have never looked at.
@@ -721,7 +698,7 @@ Launching the app re-collects the market, so you never look at yesterday's numbe
 The tabs keep showing the cached data while it runs (the header says "Mise à jour…"),
 then all reload at once when the fresh prices land.
 
-It is **silent by design**: it collects, persists and recomputes, but sends no Telegram
+It is **silent by design**: it collects, persists and recomputes, but sends no
 and no push. Reusing the digest job here would have notified you every single time you
 opened the app. `/api/run-now` still exists for a digest on demand.
 
@@ -741,11 +718,11 @@ collection instant):
 | --- | --- | --- |
 | `/api/refresh` | POST | Collect unless fresh. `?force=true` ignores the cooldown. Returns `fresh` / `running` / `started` |
 | `/api/refresh/status` | GET | Polled while a collection runs; carries `as_of` and `data_age_seconds` |
-| `/api/run-now` | POST | Collect **and notify** (Telegram digest + push) |
+| `/api/run-now` | POST | Collect **and notify** (digest push + inbox) |
 
 ## Operations Notes
 
-- Backups are automatic (nightly 22:00, verified, shipped to Telegram). See [Backups](#backups).
+- Backups are automatic (nightly 22:00, verified, local volume only). See [Backups](#backups).
   Take a manual one with `cli backup` before any destructive operation.
 - Monitor the service logs for source parse warnings, and for `backup_job_failed` /
   `backup_not_shipped`.
@@ -784,6 +761,5 @@ Still open, in rough order of value:
   so this is a lead to investigate rather than a conclusion.
 - PostgreSQL production profile with `psycopg` (the path is proven by test).
 - More news sources and RSS/media adapters.
-- Telegram command bot for on-demand stock lookup.
 - Multi-user support — a genuine schema change, not a feature flag: portfolio,
   favorites and push subscriptions all assume a single owner.

@@ -28,7 +28,6 @@ from moroccan_stock_intelligence.services.digest import (
 from moroccan_stock_intelligence.services.favorites import evaluate_favorites
 from moroccan_stock_intelligence.services.portfolio import evaluate_portfolio, load_portfolio
 from moroccan_stock_intelligence.services.push import send_push_to_all
-from moroccan_stock_intelligence.services.telegram import send_telegram_message
 
 LOG = logging.getLogger(__name__)
 
@@ -51,7 +50,6 @@ def _digest_job(session_factory, period_label: str) -> None:  # noqa: ANN001
 
             message = build_digest(period_label, metrics, scores, holdings, portfolio, favorites)
             save_notification(session, "digest", period_label, html_to_text(message))
-            send_telegram_message(message, parse_mode="HTML")
             title, body = build_push_payload(period_label, holdings, favorites)
             send_push_to_all(session, title, body, "/")
             # NOTE: the old event-based analysis alerts used to fire here. They are
@@ -91,7 +89,6 @@ def _intraday_job(session_factory, period_label: str) -> None:  # noqa: ANN001
                 period_label, metrics, scores, holdings, portfolio, favorites
             )
             save_notification(session, "intraday", period_label, html_to_text(message))
-            send_telegram_message(message, parse_mode="HTML")
             title, body = build_push_payload(period_label, holdings, favorites)
             send_push_to_all(session, title, body, "/")
             # Intelligent alerts are thesis-based now and belong to _research_job only
@@ -275,30 +272,33 @@ def _bootstrap_job(session_factory) -> None:  # noqa: ANN001
             LOG.exception("bootstrap_job_failed")
 
 
-def _backup_job() -> None:
-    """Nightly database snapshot + off-host copy.
+def _backup_job(session_factory) -> None:  # noqa: ANN001
+    """Nightly database snapshot, verified and rotated on the local volume.
 
-    Deliberately takes no session: it snapshots the FILE via SQLite's online
-    backup API, so holding an ORM session would add contention for nothing.
+    The snapshot itself takes no session: it copies the FILE via SQLite's online
+    backup API, so holding an ORM session across it would add contention for
+    nothing. A session is opened only to REPORT a failure — which is rare, and by
+    then the snapshot is already finished.
+
+    Loud on purpose when it fails: a silently failing backup is worse than no
+    backup at all, because it buys false confidence.
     """
     from moroccan_stock_intelligence.services.backup import run_backup
 
     try:
         result = run_backup()
-        if not result.ok:
-            # Loud on purpose: a silently failing backup is worse than none,
-            # because it buys false confidence.
-            reason = result.error or result.skipped_reason or "raison inconnue"
-            LOG.error("backup_job_failed reason=%s", reason)
-            send_telegram_message(f"⚠️ Sauvegarde de la base ÉCHOUÉE — {reason}")
-        elif result.ship_error:
-            # The local snapshot stands, but the off-host copy is what protects
-            # against losing the volume — so a silent local-only backup would
-            # quietly leave the real risk uncovered.
-            LOG.warning("backup_not_shipped reason=%s", result.ship_error)
-            send_telegram_message(
-                f"⚠️ Sauvegarde locale OK mais copie hors-hôte non envoyée — {result.ship_error}"
-            )
+        if result.ok:
+            return
+        reason = result.error or result.skipped_reason or "raison inconnue"
+        LOG.error("backup_job_failed reason=%s", reason)
+        title = "⚠️ Sauvegarde de la base ÉCHOUÉE"
+        body = f"{reason} — la base n'a pas de copie vérifiée pour aujourd'hui."
+        with session_factory() as session:
+            try:
+                save_notification(session, "system", title, body)
+                send_push_to_all(session, title, body, "/")
+            except Exception:  # noqa: BLE001 - reporting must not mask the failure
+                LOG.exception("backup_failure_notification_failed")
     except Exception:
         LOG.exception("backup_job_crashed")
 
@@ -400,6 +400,7 @@ def build_scheduler(session_factory) -> BackgroundScheduler:  # noqa: ANN001
     scheduler.add_job(
         _backup_job,
         CronTrigger(hour=22, minute=0, timezone=settings.timezone),
+        args=[session_factory],
         id="database_backup",
         misfire_grace_time=7200,
         replace_existing=True,

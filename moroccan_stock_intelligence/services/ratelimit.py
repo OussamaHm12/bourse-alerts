@@ -61,7 +61,7 @@ class Limit:
 #   bounds real work; this bounds the requests themselves so a loop cannot turn
 #   the platform into an amplifier pointed at the exchange.
 # heavy:  runs the ten analysts and writes rows.
-# notify: sends a Telegram message and a web push to the owner's devices.
+# notify: sends a web push to the owner's devices.
 # login:  handled separately by services/auth's lockout, which is per-failure
 #   rather than per-request; this is the blunt ceiling behind it.
 LIMITS: dict[str, Limit] = {

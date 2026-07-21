@@ -28,10 +28,8 @@ _TEST_DB_DIR = Path(tempfile.mkdtemp(prefix="msi-tests-"))
 os.environ["DATABASE_URL"] = f"sqlite:///{(_TEST_DB_DIR / 'test.db').as_posix()}"
 # The API starts APScheduler in its lifespan. Tests drive routes, not cron.
 os.environ["ENABLE_SCHEDULER"] = "false"
-# No test may reach Telegram or a push endpoint; absent credentials make the
-# senders return False instead of attempting a request.
-os.environ.pop("TELEGRAM_BOT_TOKEN", None)
-os.environ.pop("TELEGRAM_CHAT_ID", None)
+# No test may reach a push endpoint; an absent signing key makes the sender
+# return 0 instead of attempting a request.
 os.environ.pop("VAPID_PRIVATE_KEY", None)
 # Holdings would otherwise be read from the developer's private portfolio file.
 os.environ["PORTFOLIO_JSON"] = '{"fee_rate": 0.005, "holdings": []}'

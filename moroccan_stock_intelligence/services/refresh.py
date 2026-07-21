@@ -1,8 +1,8 @@
 """On-open refresh: bring the data up to date when the app is launched.
 
-This is deliberately NOT `_digest_job`. That job collects *and* sends the Telegram
-digest and a web push — firing it every time the app opens would notify the owner
-several times a day for nothing. This path is silent: it collects, persists, and
+This is deliberately NOT `_digest_job`. That job collects *and* sends the digest
+as a web push — firing it every time the app opens would notify the owner several
+times a day for nothing. This path is silent: it collects, persists, and
 recomputes the analysis. Notifications stay owned by the scheduler.
 
 Two guards, because a scrape is not free (one fetch of the Bourse page, then ~80
@@ -103,7 +103,7 @@ def is_stale(session: Session) -> bool:
 
 
 def refresh_market_data(session_factory) -> dict:  # noqa: ANN001
-    """Collect + persist + recompute. Silent: no Telegram, no push.
+    """Collect + persist + recompute. Silent: no push, no inbox entry.
 
     Runs the slot already claimed by `STATE.try_begin()`, and always releases it —
     including on failure, so one bad scrape does not block every later refresh.

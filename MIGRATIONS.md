@@ -155,6 +155,7 @@ on every query — the same first request measured 1 045 ms on Postgres vs ~990 
 SQLite, i.e. no gain at this size.
 
 The honest trigger is one of: a second writer (a worker, a second instance), a volume
-that outgrows the plan, or wanting managed PITR backups rather than the Telegram
-copy. Until one of those is true, this document exists so the switch is a decision
-rather than a project.
+that outgrows the plan, or wanting managed PITR backups rather than the local-only
+snapshots this project takes today (there is no off-host copy — see the Backups
+section of the README). Until one of those is true, this document exists so the
+switch is a decision rather than a project.

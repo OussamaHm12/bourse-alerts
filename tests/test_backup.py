@@ -6,8 +6,7 @@ Guards the properties that make a backup worth having:
     the reason we use SQLite's online backup API instead of copying the file;
   * every archive is verified, and actually restorable (we decompress and reopen);
   * rotation keeps N and touches only our own filenames;
-  * shipping is best-effort: Telegram down / oversized / no credentials must
-    never destroy or invalidate the local snapshot;
+  * the run is local-only — no network call — and says so in its output;
   * a non-SQLite URL is skipped honestly rather than half-handled.
 """
 
@@ -49,16 +48,13 @@ def backup_dir(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def _no_real_telegram(monkeypatch):
-    """Nothing in this file may touch the network. Shipping is opted into per-test.
+def _isolated_settings(monkeypatch):
+    """Pin the settings object so a developer's own .env cannot steer these tests.
 
     `Settings` is a frozen dataclass, so the whole object is swapped (the repo's
     existing convention — see test_refresh / test_favorites).
     """
-    monkeypatch.setattr(bk, "send_telegram_document", lambda *a, **k: True)
-    monkeypatch.setattr(
-        bk, "settings", replace(real_settings, telegram_bot_token="tok", telegram_chat_id="chat")
-    )
+    monkeypatch.setattr(bk, "settings", replace(real_settings))
 
 
 # --------------------------------------------------------------------------- #
@@ -86,7 +82,7 @@ def test_non_file_backends_have_no_path(url):
 def test_postgres_url_is_skipped_honestly(backup_dir):
     """A Postgres backup is pg_dump, not a file snapshot. Say so; do not pretend."""
     result = bk.run_backup(
-        database_url="postgresql://u:p@h/db", backup_dir=backup_dir, ship=False
+        database_url="postgresql://u:p@h/db", backup_dir=backup_dir
     )
     assert result.ok is False
     assert result.skipped_reason is not None
@@ -96,7 +92,7 @@ def test_postgres_url_is_skipped_honestly(backup_dir):
 
 def test_missing_source_is_skipped_not_crashed(tmp_path, backup_dir):
     result = bk.run_backup(
-        database_url=f"sqlite:///{tmp_path / 'absent.db'}", backup_dir=backup_dir, ship=False
+        database_url=f"sqlite:///{tmp_path / 'absent.db'}", backup_dir=backup_dir
     )
     assert result.ok is False
     assert "introuvable" in result.skipped_reason
@@ -108,7 +104,7 @@ def test_missing_source_is_skipped_not_crashed(tmp_path, backup_dir):
 
 
 def test_backup_produces_a_verified_archive(source_db, backup_dir):
-    result = bk.run_backup(database_url=f"sqlite:///{source_db}", backup_dir=backup_dir, ship=False)
+    result = bk.run_backup(database_url=f"sqlite:///{source_db}", backup_dir=backup_dir)
     assert result.ok is True
     assert result.integrity_ok is True
     assert result.path.exists()
@@ -119,7 +115,7 @@ def test_backup_produces_a_verified_archive(source_db, backup_dir):
 
 def test_archive_is_actually_restorable(source_db, backup_dir, tmp_path):
     """A backup nobody has restored is an assumption. Decompress it and read it back."""
-    result = bk.run_backup(database_url=f"sqlite:///{source_db}", backup_dir=backup_dir, ship=False)
+    result = bk.run_backup(database_url=f"sqlite:///{source_db}", backup_dir=backup_dir)
 
     restored = tmp_path / "restored.db"
     assert bk.restore_readable(result.path, restored) is True
@@ -133,7 +129,7 @@ def test_archive_is_actually_restorable(source_db, backup_dir, tmp_path):
 
 
 def test_restored_content_matches_the_source_exactly(source_db, backup_dir, tmp_path):
-    result = bk.run_backup(database_url=f"sqlite:///{source_db}", backup_dir=backup_dir, ship=False)
+    result = bk.run_backup(database_url=f"sqlite:///{source_db}", backup_dir=backup_dir)
     restored = tmp_path / "restored.db"
     bk.restore_readable(result.path, restored)
 
@@ -162,7 +158,7 @@ def test_snapshot_is_safe_while_a_writer_holds_an_open_transaction(source_db, ba
     )
     try:
         result = bk.run_backup(
-            database_url=f"sqlite:///{source_db}", backup_dir=backup_dir, ship=False
+            database_url=f"sqlite:///{source_db}", backup_dir=backup_dir
         )
     finally:
         writer.rollback()
@@ -185,13 +181,13 @@ def test_snapshot_is_safe_while_a_writer_holds_an_open_transaction(source_db, ba
 
 def test_intermediate_plain_copy_is_not_left_behind(source_db, backup_dir):
     """Only the compressed archive survives — an uncompressed twin would double the volume."""
-    bk.run_backup(database_url=f"sqlite:///{source_db}", backup_dir=backup_dir, ship=False)
+    bk.run_backup(database_url=f"sqlite:///{source_db}", backup_dir=backup_dir)
     assert list(backup_dir.glob("*.db")) == []
     assert len(list(backup_dir.glob("*.db.gz"))) == 1
 
 
 def test_archive_is_really_gzip(source_db, backup_dir):
-    result = bk.run_backup(database_url=f"sqlite:///{source_db}", backup_dir=backup_dir, ship=False)
+    result = bk.run_backup(database_url=f"sqlite:///{source_db}", backup_dir=backup_dir)
     with gzip.open(result.path, "rb") as handle:
         assert handle.read(16).startswith(b"SQLite format 3")
 
@@ -205,7 +201,7 @@ def test_corrupt_source_fails_loudly_and_produces_no_archive(tmp_path, backup_di
     broken = tmp_path / "broken.db"
     broken.write_bytes(b"this is definitely not a sqlite database" * 40)
 
-    result = bk.run_backup(database_url=f"sqlite:///{broken}", backup_dir=backup_dir, ship=False)
+    result = bk.run_backup(database_url=f"sqlite:///{broken}", backup_dir=backup_dir)
 
     assert result.ok is False
     assert result.error is not None
@@ -226,7 +222,6 @@ def test_rotation_keeps_the_newest_n(source_db, backup_dir):
         bk.run_backup(
             database_url=f"sqlite:///{source_db}",
             backup_dir=backup_dir,
-            ship=False,
             keep=3,
             now=datetime(2026, 7, 10, hour, tzinfo=UTC),
         )
@@ -250,7 +245,6 @@ def test_rotation_only_touches_our_own_files(source_db, backup_dir):
         bk.run_backup(
             database_url=f"sqlite:///{source_db}",
             backup_dir=backup_dir,
-            ship=False,
             keep=1,
             now=datetime(2026, 7, 10, hour, tzinfo=UTC),
         )
@@ -265,7 +259,6 @@ def test_keep_zero_disables_rotation(source_db, backup_dir):
         bk.run_backup(
             database_url=f"sqlite:///{source_db}",
             backup_dir=backup_dir,
-            ship=False,
             keep=0,
             now=datetime(2026, 7, 10, hour, tzinfo=UTC),
         )
@@ -273,72 +266,37 @@ def test_keep_zero_disables_rotation(source_db, backup_dir):
 
 
 # --------------------------------------------------------------------------- #
-# Shipping is best-effort — it must never cost us the local snapshot.          #
+# The backup is local-only, and says so.                                       #
 # --------------------------------------------------------------------------- #
 
 
-def test_shipping_success_is_reported(source_db, backup_dir, monkeypatch):
-    sent = {}
+def test_backup_makes_no_network_call(source_db, backup_dir, monkeypatch):
+    """There is no off-host copy any more, so nothing here may touch the network.
 
-    def fake_send(path, caption=None):
-        sent["name"] = path.name
-        sent["caption"] = caption
-        return True
+    Asserted rather than assumed: shipping was removed along with Telegram, and a
+    reintroduced upload that silently failed would be worse than no upload at all.
+    """
+    import requests
 
-    monkeypatch.setattr(bk, "send_telegram_document", fake_send)
-    result = bk.run_backup(database_url=f"sqlite:///{source_db}", backup_dir=backup_dir, ship=True)
-
-    assert result.shipped is True
-    assert result.ship_error is None
-    assert sent["name"] == result.path.name
-    assert "Sauvegarde base" in sent["caption"]
-
-
-def test_telegram_failure_does_not_invalidate_the_backup(source_db, backup_dir, monkeypatch):
-    def boom(path, caption=None):
-        raise RuntimeError("telegram is down")
-
-    monkeypatch.setattr(bk, "send_telegram_document", boom)
-    result = bk.run_backup(database_url=f"sqlite:///{source_db}", backup_dir=backup_dir, ship=True)
-
-    assert result.ok is True, "a failed upload must not throw away a good snapshot"
-    assert result.path.exists()
-    assert result.shipped is False
-    assert "telegram is down" in result.ship_error
-
-
-def test_oversized_archive_is_not_uploaded(source_db, backup_dir, monkeypatch):
-    called = []
-    monkeypatch.setattr(bk, "send_telegram_document", lambda *a, **k: called.append(1))
-    result = bk.run_backup(
-        database_url=f"sqlite:///{source_db}",
-        backup_dir=backup_dir,
-        ship=True,
-        max_upload_mb=0.000001,
-    )
-    assert called == []
+    for verb in ("post", "get", "put"):
+        monkeypatch.setattr(
+            requests, verb, lambda *a, **k: pytest.fail("backup must not use the network")
+        )
+    result = bk.run_backup(database_url=f"sqlite:///{source_db}", backup_dir=backup_dir)
     assert result.ok is True
-    assert result.shipped is False
-    assert "limite d'envoi" in result.ship_error
 
 
-def test_missing_credentials_skip_shipping_without_crashing(source_db, backup_dir, monkeypatch):
-    monkeypatch.setattr(
-        bk, "settings", replace(real_settings, telegram_bot_token=None, telegram_chat_id=None)
-    )
-    result = bk.run_backup(database_url=f"sqlite:///{source_db}", backup_dir=backup_dir, ship=True)
-    assert result.ok is True
-    assert result.shipped is False
-    assert "Telegram" in result.ship_error
+def test_render_warns_that_the_copy_is_local_only(source_db, backup_dir):
+    """The residual risk is stated on every successful run, not buried in a docstring.
 
-
-def test_ship_false_never_calls_telegram(source_db, backup_dir, monkeypatch):
-    monkeypatch.setattr(
-        bk, "send_telegram_document", lambda *a, **k: pytest.fail("must not ship")
-    )
-    result = bk.run_backup(database_url=f"sqlite:///{source_db}", backup_dir=backup_dir, ship=False)
-    assert result.ok is True
-    assert result.shipped is False
+    Losing the volume loses these backups with it, and the history API cannot
+    re-serve seances older than ~3 years — so this warning is the only thing
+    between the owner and a silent, permanent loss.
+    """
+    result = bk.run_backup(database_url=f"sqlite:///{source_db}", backup_dir=backup_dir)
+    text = bk.render_result(result)
+    assert "Copie locale uniquement" in text
+    assert "3 ans" in text
 
 
 # --------------------------------------------------------------------------- #
@@ -347,14 +305,14 @@ def test_ship_false_never_calls_telegram(source_db, backup_dir, monkeypatch):
 
 
 def test_render_reports_success(source_db, backup_dir):
-    result = bk.run_backup(database_url=f"sqlite:///{source_db}", backup_dir=backup_dir, ship=False)
+    result = bk.run_backup(database_url=f"sqlite:///{source_db}", backup_dir=backup_dir)
     text = bk.render_result(result)
     assert "Sauvegarde terminée" in text
-    assert "Intégrité      : ok" in text
+    assert "Intégrité   : ok" in text
 
 
 def test_render_reports_a_skip(backup_dir):
-    result = bk.run_backup(database_url="postgresql://u:p@h/db", backup_dir=backup_dir, ship=False)
+    result = bk.run_backup(database_url="postgresql://u:p@h/db", backup_dir=backup_dir)
     assert "ignorée" in bk.render_result(result)
 
 
@@ -363,13 +321,11 @@ def test_backup_is_repeatable(source_db, backup_dir):
     first = bk.run_backup(
         database_url=f"sqlite:///{source_db}",
         backup_dir=backup_dir,
-        ship=False,
         now=datetime(2026, 7, 10, 22, 0, 0, tzinfo=UTC),
     )
     second = bk.run_backup(
         database_url=f"sqlite:///{source_db}",
         backup_dir=backup_dir,
-        ship=False,
         now=datetime(2026, 7, 10, 22, 0, 1, tzinfo=UTC),
     )
     assert first.path != second.path

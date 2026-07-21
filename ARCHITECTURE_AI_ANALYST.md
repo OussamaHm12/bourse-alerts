@@ -556,8 +556,8 @@ the copy step or prod won't change).
 
 ## 11. Notifications (thesis-change semantics)
 
-Extend the existing `dispatch_analysis_notifications` (already deduped, capped 3/run, push+inbox,
-Telegram untouched to avoid the double-Telegram trap). Once the research DB exists, "notify" means
+Extend the existing `dispatch_analysis_notifications` (already deduped, capped 3/run, push+inbox —
+the only channel, now that Telegram is gone). Once the research DB exists, "notify" means
 **"the stored thesis changed"**: horizon recommendation flipped, confidence dropped on new conflicting
 info, news invalidated yesterday's thesis, breakout confirmed, portfolio risk rose, sector rotation
 detected, dividend improved the long-term case. **Notify only on a thesis change — never on noise.**

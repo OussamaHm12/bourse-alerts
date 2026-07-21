@@ -210,7 +210,7 @@ Future<void> logout() async {
 
 // ---------------------------- data freshness ------------------------------ //
 // Opening the app re-collects the market so the numbers on screen are current.
-// The collection is silent (no Telegram, no push — that stays the scheduler's job)
+// The collection is silent (no push — notifications stay the scheduler's job)
 // and the server skips it when the data is younger than its cooldown, because
 // Casablanca Bourse publishes with a ~15 min delay and scraping faster returns
 // nothing new.

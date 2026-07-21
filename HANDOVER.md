@@ -30,9 +30,9 @@ A personal Casablanca Stock Exchange (Bourse de Casablanca) intelligence platfor
 5. **Tracks a personal portfolio** (quantity + buy price per holding) and computes net P/L after
    fees, plus a **SELL / HOLD** recommendation per position.
 6. **Collects official market news** (Casablanca Bourse "avis"/notices) and links them to symbols.
-7. **Notifies** the owner through two channels:
-   - **Telegram** (rich HTML digests) and
-   - **Web Push** (PWA notifications on the phone).
+7. **Notifies** the owner through one channel: **Web Push** (PWA notifications on the phone),
+   with every message also persisted to the in-app notifications inbox. A Telegram path existed
+   until 2026-07-21; it was removed — the app is the only channel now.
 8. **Serves a Flutter Web PWA** (installable app) and a JSON API from the same process.
 9. A Streamlit dashboard existed until 2026-07-16; removed (never deployed, duplicated the
    scoring pipeline, and pulled streamlit+plotly — ~180 MB — into the production image).
@@ -62,7 +62,6 @@ single most important architectural constraint to understand before adding users
 - Full analytics + 3-way scoring with explanations.
 - Portfolio net-P/L and SELL/HOLD engine (env-tunable thresholds).
 - Official news scraping + sentiment/event classification + symbol linking.
-- Telegram digests (open/close full digests + intraday updates + urgent crash alerts).
 - Web Push (VAPID) with subscription storage + stale-subscription cleanup.
 - In-process APScheduler (bootstrap seed + weekday cron jobs).
 - FastAPI JSON API (overview, stocks, stock detail, opportunities, news, notifications, sectors,
@@ -71,7 +70,6 @@ single most important architectural constraint to understand before adding users
   detail sheet (price chart, score breakdown, indicators, linked news) + manual "run now" button.
 - Notifications inbox (persisted `notifications` table shown in-app).
 - Cache-busting via `no-cache` app-shell headers so new deploys load without a stale SW.
-- GitHub Actions cron as an **alternate** Telegram delivery path.
 - ~~Streamlit dashboard~~ — removed 2026-07-16; the PWA covers it.
 
 ### Features still missing / not done
@@ -80,7 +78,6 @@ single most important architectural constraint to understand before adding users
 - **PostgreSQL in production** (supported by config/`psycopg`, but Railway runs SQLite on a volume).
 - Backtesting, fundamentals/valuation ratios, sector benchmark indices.
 - PDF text extraction for official notices (only titles/links are parsed).
-- Telegram command bot (on-demand lookup).
 - More news/RSS sources.
 - Automated Flutter build in CI (the compiled web build is committed by hand — see §7, §14).
 - Tests for the API layer, scrapers-against-fixtures beyond the two included, scheduler.
@@ -92,9 +89,9 @@ single most important architectural constraint to understand before adding users
 ### High-level shape
 One Python process (FastAPI under Uvicorn) does **everything**: it serves the JSON API, serves the
 pre-compiled Flutter Web PWA as static files, and runs an in-process APScheduler that collects data
-and sends notifications on a cron. Data lives in SQLite on a mounted volume. A **separate, optional**
-GitHub Actions cron can also run the CLI to send Telegram digests (this is the origin of the
-"double Telegram" caveat).
+and sends notifications on a cron. Data lives in SQLite on a mounted volume. It is the only
+sender: the GitHub Actions cron that used to duplicate it is gone, and so is the Telegram path it
+delivered on.
 
 ### Components
 - **Frontend:** Flutter Web (single `main.dart`), compiled to `webapp_flutter/` and **committed** to
@@ -107,11 +104,11 @@ GitHub Actions cron can also run the CLI to send Telegram digests (this is the o
   swapping `DATABASE_URL`.
 - **Storage:** the SQLite file on a Railway volume mounted at `/app/data`. No object storage.
 - **Auth:** none.
-- **Third-party services:** Telegram Bot API (outbound), Web Push endpoints (browser push services,
-  outbound), scraped market/news websites (inbound data).
+- **Third-party services:** Web Push endpoints (browser push services, outbound), scraped
+  market/news websites (inbound data).
 - **APIs (internal):** the `/api/*` JSON endpoints (see §9).
 - **External integrations:** Casablanca Bourse (prices + avis), BMCE Capital Bourse, CDG Capital
-  Bourse (price fallbacks), Telegram, VAPID web push.
+  Bourse (price fallbacks), VAPID web push.
 
 ### Architecture diagram (Mermaid)
 
@@ -145,7 +142,6 @@ flowchart TB
     CB["Casablanca Bourse<br/>(prices + avis)"]
     BMCE["BMCE Capital Bourse"]
     CDG["CDG Capital Bourse"]
-    TG["Telegram Bot API"]
     WP["Browser Push Services<br/>(FCM/Mozilla/etc.)"]
   end
 
@@ -153,28 +149,19 @@ flowchart TB
   SCR -->|fallback| BMCE
   SCR -->|fallback| CDG
   SVC -->|news scrape| CB
-  SVC -->|sendMessage| TG
   SVC -->|Web Push VAPID| WP
   WP --> SW
   SW --> Client
   PUSHJS -->|POST /api/push/subscribe| API
-
-  subgraph GH["GitHub Actions (OPTIONAL, alternate path)"]
-    CRON["cron: weekdays<br/>morning/closing/intraday"]
-    CLI["python -m ...cli <mode>"]
-    CRON --> CLI
-    CLI -->|Telegram only| TG
-    CLI -.->|cached db artifact| DB
-  end
 
   PWA -->|fetch /api/*| API
 ```
 
 ### Two runtime "modes" (know this)
 1. **Server mode (`cli serve`)** — what Railway runs. FastAPI + static PWA + in-process scheduler.
-   Sends **both** Telegram and Web Push.
-2. **CLI/batch mode (`cli <command>`)** — one-shot commands, used by GitHub Actions and local dev.
-   Sends **Telegram only** (no push, no server).
+   This is the only thing that notifies in production.
+2. **CLI/batch mode (`cli <command>`)** — one-shot commands, for local dev and manual runs. The
+   digest commands write to the inbox and send a web push; `run-once` is silent.
 
 ---
 
@@ -283,7 +270,7 @@ logging_config.py JSON-line logging to stdout, UTC timestamps
 utils.py          normalize_text, parse_number (Moroccan formats), clamp, pct_distance
 scrapers/         base (retry/SSL), casablanca (primary), bmce, cdg (fallbacks)
 services/         collector, analytics, scoring, portfolio, digest, news, alerts,
-                  telegram, push, views
+                  push, views
 ```
 
 ### Endpoints
@@ -308,12 +295,11 @@ See §9 for full detail. Summary: all read endpoints are `GET /api/*` and return
 - **scoring** — weighted BUY score, plus WATCH and AVOID, with reasons/risks/components.
 - **portfolio** — loads holdings (from `PORTFOLIO_JSON` env or `config/portfolio.json`), computes
   net P/L after fees, derives SELL/HOLD advice.
-- **digest** — builds Telegram HTML (full digest + intraday update + urgent alert) and the short
-  push payload; `html_to_text` strips HTML for the in-app notifications inbox.
+- **digest** — builds the rich HTML message (full digest + intraday update + urgent alert) and the
+  short push payloads; `html_to_text` strips the markup for the in-app notifications inbox.
 - **news** — scrapes official avis, classifies event/sentiment, links to symbols.
-- **alerts** — records technical events as `signals`, dedups alerts once/symbol/day, dispatches
-  urgent holding-crash Telegram alerts.
-- **telegram** — one function `send_telegram_message`.
+- **alerts** — dedups alerts once/symbol/day and dispatches urgent holding- and favorite-crash
+  alerts as a web push plus an inbox entry.
 - **push** — VAPID key gen, subscription save, `send_push_to_all` (prunes 404/410 endpoints).
 - **views** — turns metrics/scores/portfolio into the JSON payloads the API returns.
 
@@ -379,7 +365,7 @@ DataFrame via `load_price_frame`. `expire_on_commit=False`, `autoflush=False`.
 | explanation | text | |
 | metrics_json | text null | full MetricSet dump |
 
-**`alerts`** — de-duplicated alert events + Telegram delivery state.
+**`alerts`** — de-duplicated alert events + their delivery state.
 | column | type | notes |
 |---|---|---|
 | id | int PK | |
@@ -449,8 +435,6 @@ permission system anywhere in this project.** This is intentional for a single-u
 - **Password reset:** none.
 - **Permissions / roles:** none — every endpoint is public and unauthenticated.
 - **"Identity" that does exist:**
-  - **Telegram**: messages go to a single `TELEGRAM_CHAT_ID` (the owner's chat). The bot token is
-    the only secret gating delivery.
   - **Web Push**: anyone who opens the site and taps "Activer" is stored in `push_subscriptions`
     and will receive **all** future pushes. There is no way to target one user.
   - **Portfolio**: a single global portfolio from `PORTFOLIO_JSON` (or `config/portfolio.json`).
@@ -491,13 +475,13 @@ local-dev fallback).
 ### Render (alternate, `render.yaml` blueprint)
 A ready Render blueprint exists: `type: web`, `runtime: docker`, `plan: starter` (always-on),
 `healthCheckPath: /api/health`, a 1 GB disk at `/app/data`. Secrets set in dashboard
-(`sync: false`): `VAPID_*`, `PORTFOLIO_JSON`, `TELEGRAM_*`. Not the primary host but kept working.
+(`sync: false`): `VAPID_*`, `PORTFOLIO_JSON`. Not the primary host but kept working.
 
 ### Docker (local / VPS)
 `docker-compose.yml` defines: `webapp` (the server), `collector` (one-shot `run-once`),
 and an optional `postgres` profile. `.env` is the env source.
 
-### GitHub Actions — REMOVED (2026-07-16). The "double Telegram" risk is resolved.
+### GitHub Actions — REMOVED (2026-07-16). The double-notification risk is resolved.
 `.github/workflows/stock-alert.yml` used to cron digests (10:00 / 16:00 Morocco) alongside the
 Railway scheduler (09:00 / 17:00) — four digests a day. The deeper problem was not the duplication:
 the workflow ran against a **throwaway SQLite file restored from the Actions cache**, so its history
@@ -505,8 +489,8 @@ depth, and therefore its momentum / scores / confidences, were structurally unre
 production's. The two channels could contradict each other about the same stock on the same day.
 
 **Resolution: the deployed service is the only sender.** The workflow is deleted. Nothing other than
-Railway may hold `TELEGRAM_BOT_TOKEN`. If a second scheduled runner is ever reintroduced, it gets a
-read-only job and no bot token.
+Railway may hold `VAPID_PRIVATE_KEY`. If a second scheduled runner is ever reintroduced, it gets a
+read-only job and no notification secret — `tests/test_scheduler_jobs.py` enforces this.
 
 ### CI/CD
 - **No build/test CI** beyond the scheduled workflow above. There is a `.pre-commit-config.yaml`
@@ -528,9 +512,7 @@ strings.
 | Variable | Purpose | Example / default | Used in |
 |---|---|---|---|
 | `DATABASE_URL` | DB connection | `sqlite:///data/market.db` (default) / `postgresql+psycopg://...` | db.py |
-| `TELEGRAM_BOT_TOKEN` | Telegram bot auth (**secret**) | `123456789:AA…` | telegram.py, alerts.py |
-| `TELEGRAM_CHAT_ID` | Destination chat | `123456789` | telegram.py |
-| `HTTP_TIMEOUT_SECONDS` | Scrape/HTTP timeout | `20` | scrapers, news, telegram |
+| `HTTP_TIMEOUT_SECONDS` | Scrape/HTTP timeout | `20` | scrapers, news |
 | `HTTP_RETRIES` | Scraper retry attempts (tenacity) | `3` | scrapers/base.py |
 | `HTTP_VERIFY_SSL` | Verify TLS on scrapes | `true` | scrapers, news |
 | `HTTP_ALLOW_INSECURE_SOURCE_RETRY` | Retry a source w/o SSL verify on cert error | `false` (prod), `true` in CI/Railway | scrapers, news |
@@ -735,7 +717,7 @@ All in `flutter_app/lib/main.dart`. Shell = `HomeShell` (AppBar-less custom head
 | `pandas` | Analytics (resampling, rolling stats, momentum). |
 | `APScheduler` | In-process cron scheduler. |
 | `beautifulsoup4` | HTML parsing for scrapers + news. |
-| `requests` | HTTP client for scraping + Telegram. |
+| `requests` | HTTP client for scraping. |
 | `tenacity` | Retry with exponential backoff on scraper fetches. |
 | `pywebpush` | Send Web Push messages. |
 | `py_vapid` (via pywebpush) + `cryptography` | VAPID key handling / key generation. |
@@ -754,8 +736,6 @@ All in `flutter_app/lib/main.dart`. Shell = `HomeShell` (AppBar-less custom head
   (weekdays). But the README, the GitHub Actions cron, and some code labels/copy say **10:00/16:00**
   and **12:00/14:00**. The Flutter empty-state says 9/11/13/15/17. Pick one story; right now the
   labels a user sees may not match when pushes actually arrive.
-- **Double Telegram:** if `TELEGRAM_*` is set on Railway (scheduler sends Telegram) AND the GitHub
-  Actions cron still runs, the owner gets each digest twice. Only one path should own Telegram.
 - **Untyped Flutter models:** everything is `Map<String,dynamic>` accessed by string key. A backend
   field rename silently breaks the UI (no compile-time safety). Some casts (e.g.
   `(o['buy_score'] as num).toDouble()`) will throw if a field is unexpectedly null.
@@ -795,8 +775,8 @@ All in `flutter_app/lib/main.dart`. Shell = `HomeShell` (AppBar-less custom head
 
 ## 13. Future Improvements (prioritized)
 
-1. **Resolve the schedule + double-Telegram ambiguity.** Decide Railway-only vs GitHub-Actions-only
-   for Telegram; align the cron times, code labels, README, and Flutter copy to one source of truth.
+1. **Resolve the schedule ambiguity.** Align the cron times, code labels, README, and Flutter copy
+   to one source of truth.
 2. **Add authentication + multi-user** if this is ever shared: per-user portfolios (move holdings to
    DB), associate `push_subscriptions` with users, protect `/api/run-now` and push endpoints.
 3. **Typed Flutter models** (hand-written `fromJson` or `freezed`/`json_serializable`) to kill the
@@ -810,7 +790,7 @@ All in `flutter_app/lib/main.dart`. Shell = `HomeShell` (AppBar-less custom head
 8. **Move push sending to async/background + batch**; prune stale subscriptions proactively.
 9. **PostgreSQL in production** with the persistent-disk/volume already in place.
 10. Roadmap items from README: backtesting, fundamentals/valuation, sector benchmark indices, PDF
-    notice extraction, Telegram command bot, more news sources.
+    notice extraction, more news sources.
 
 ---
 
@@ -829,8 +809,8 @@ you can test push locally.
 
 ### Useful CLI commands
 `init-db, collect, analyze, run-once, morning-digest, afternoon-digest, intraday-update,
-watch-holdings, daily-summary, send-alerts, gen-vapid, serve`. The digest/intraday/watch commands
-send Telegram (need `TELEGRAM_*`). `run-once` is safe (no messages).
+watch-holdings, daily-summary, gen-vapid, serve`. The digest/intraday/watch commands write to the
+inbox and send a web push (need `VAPID_*`). `run-once` is safe (no messages).
 
 ### Build the Flutter frontend (manual — critical, from project memory)
 Flutter tooling is **not** installed on the host; builds go through the
@@ -852,8 +832,8 @@ must be trusted inside the container.
 
 ### Deploy
 Push to `main` → Railway auto-deploys the Docker image (serves the committed `webapp_flutter/`).
-Set env vars in the Railway dashboard (`VAPID_*`, `ENABLE_SCHEDULER`, `TIMEZONE`, `PORTFOLIO_JSON`,
-optionally `TELEGRAM_*`). Ensure the `/app/data` volume exists for SQLite persistence.
+Set env vars in the Railway dashboard (`VAPID_*`, `ENABLE_SCHEDULER`, `TIMEZONE`,
+`PORTFOLIO_JSON`, `AUTH_PASSWORD`). Ensure the `/app/data` volume exists for SQLite persistence.
 
 ### Testing
 ```bash
@@ -894,7 +874,7 @@ Add saved-HTML fixtures whenever a scraped source changes shape.
 - **`moroccan_stock_intelligence/services/analytics.py`** — pandas metric engine (`MetricSet`).
 - **`moroccan_stock_intelligence/services/scoring.py`** — BUY/WATCH/AVOID scoring + reasons/risks.
 - **`moroccan_stock_intelligence/services/portfolio.py`** — holdings loading, net-P/L, SELL/HOLD rules.
-- **`moroccan_stock_intelligence/services/digest.py`** — Telegram HTML + push payload + urgent alert +
+- **`moroccan_stock_intelligence/services/digest.py`** — message HTML + push payloads + urgent alert +
   `html_to_text`. Owns French date/number formatting and the disclaimer.
 - **`moroccan_stock_intelligence/services/views.py`** — API payload builders + `classify_label` +
   `_trend` (the mapping from scores to ACHETER/SURVEILLER/ÉVITER/NEUTRE lives here).
@@ -904,7 +884,6 @@ Add saved-HTML fixtures whenever a scraped source changes shape.
   holding-crash dispatch, legacy per-event + daily summary builders.
 - **`moroccan_stock_intelligence/services/push.py`** — VAPID gen, subscribe upsert, `send_push_to_all`
   with stale-endpoint pruning.
-- **`moroccan_stock_intelligence/services/telegram.py`** — `send_telegram_message`.
 - **`moroccan_stock_intelligence/scrapers/{base,casablanca,bmce,cdg}.py`** — retry/SSL base + 3 sources.
 - **`moroccan_stock_intelligence/utils.py`** — `parse_number` (Moroccan formats: spaces, comma
   decimals, K/M/B, %/MAD/DH), `normalize_text`, `clamp`, `pct_distance`.
@@ -915,7 +894,7 @@ Add saved-HTML fixtures whenever a scraped source changes shape.
 - **`Dockerfile`** — simple single-stage Python image; `CMD` = `cli serve --host 0.0.0.0`.
 - **`render.yaml`** — Render blueprint (alternate host).
 - **`docker-compose.yml`** — webapp/collector/dashboard/postgres services for local/VPS.
-- **`services/backup.py`** — nightly verified DB snapshot, gzipped, shipped off-host to Telegram.
+- **`services/backup.py`** — nightly verified DB snapshot, gzipped, kept on the local volume only.
 - **`config/portfolio.example.json`** — sample config
   (`config/portfolio.json` is gitignored).
 - **`tests/`** — `test_parsing.py`, `test_scoring.py`, `test_portfolio.py`.
@@ -975,14 +954,14 @@ Add saved-HTML fixtures whenever a scraped source changes shape.
   breakout (near/at 52-week high with momentum), support_test (within 2% of support), and
   opportunity_score (BUY ≥ `MIN_OPPORTUNITY_SCORE` = 80). These are stored + surfaced in digests
   rather than each firing its own message.
-- **Urgent alert** (immediate Telegram) fires only for **held** stocks that drop ≤ `URGENT_CRASH_PCT`
+- **Urgent alert** (immediate web push) fires only for **held** stocks that drop ≤ `URGENT_CRASH_PCT`
   (−5%) intraday, deduped once per symbol per day.
 - **Digest opportunity recap** uses `OPPORTUNITY_RECAP_SCORE` (60): top pick detailed + Top 5.
 - **Scheduler cadence (actual):** weekdays only — full digest at 09:00 & 17:00, intraday update at
   11/13/15; a one-off bootstrap seed ~8 s after boot if the DB is empty. Manual `/api/run-now`
   works any day.
-- Delivery: digests/updates go to **both** Telegram (HTML) and Web Push (short payload) and are
-  saved to the `notifications` inbox; urgent alerts go to Telegram.
+- Delivery: digests/updates go out as a Web Push (short payload) and are saved to the
+  `notifications` inbox; urgent alerts take the same route.
 
 ---
 
@@ -994,7 +973,7 @@ Add saved-HTML fixtures whenever a scraped source changes shape.
   Adding auth is prerequisite to any multi-user or public exposure.
 
 ### Secrets management
-- Secrets (`TELEGRAM_BOT_TOKEN`, `VAPID_PRIVATE_KEY`, `PORTFOLIO_JSON`) live only in host env vars
+- Secrets (`VAPID_PRIVATE_KEY`, `PORTFOLIO_JSON`) live only in host env vars
   (Railway/Render dashboards) and GitHub Actions secrets. `.env` and `config/portfolio.json` are
   gitignored. VAPID keys are generated via `gen-vapid` and pasted into the host env.
 
@@ -1069,11 +1048,10 @@ unless the goal actually changes to multi-user — if it does, they become prere
 - **`dart:html` + `js_interop` = Web-only.** The app cannot compile to native Android/iOS as-is.
   A future native port must replace `dart:html` HTTP with `package:http`/`dio`, replace the JS push
   bridge with `firebase_messaging`/native push, and add typed models.
-- **Two notification transports (Telegram + Web Push) and two schedulers (in-process APScheduler +
-  optional GitHub Actions).** The APScheduler path (Railway, always-on) is the intended primary; the
-  GitHub Actions cron predates it and is a fallback. **They overlap → double Telegram.** Before
-  anything else, decide which owns Telegram and disable the other (turn off the GH cron, or don't set
-  `TELEGRAM_*` on Railway).
+- **One notification transport (Web Push) and one scheduler (in-process APScheduler).** Both the
+  GitHub Actions cron and the Telegram transport have been removed; the Railway APScheduler is the
+  sole sender. Keep it that way — a second scheduled runner notifying from its own database is the
+  failure this project already lived through once.
 - **The real schedule lives in `scheduler.py` (9/17 + 11/13/15, weekdays).** README/labels/GH-cron
   say 10/16 + 12/14. Treat `scheduler.py` as truth and reconcile the docs/labels.
 - **Scores look "flat" early.** With little history, momenta are null and BUY clusters near ~49.5
@@ -1084,7 +1062,7 @@ unless the goal actually changes to multi-user — if it does, they become prere
 - **SQLite lives on one Railway volume at `/app/data`.** A fresh/empty volume shows nothing until the
   bootstrap seed (or the "Actualiser" button). Keep the scheduler on exactly one instance; don't
   scale to multiple instances without moving to Postgres + externalizing the scheduler.
-- **`html_to_text`** exists so the same content feeds Telegram (HTML) and the in-app inbox (plain).
+- **`html_to_text`** exists so one composed message feeds both the push and the in-app inbox (plain).
 - **Insecure SSL retry is opt-in per env**, not global — keep `HTTP_VERIFY_SSL=true` and only enable
   `HTTP_ALLOW_INSECURE_SOURCE_RETRY` where a specific source has a broken chain (CI/Railway).
 
@@ -1101,7 +1079,6 @@ unless the goal actually changes to multi-user — if it does, they become prere
 - Editing Dart without rebuilding/copying `webapp_flutter/` → no visible change in prod.
 - Adding a model column and expecting it to appear → `create_all` won't ALTER; migrate or reset.
 - Renaming a backend JSON field → silently breaks the untyped Flutter UI.
-- Turning on `TELEGRAM_*` in Railway while the GH cron runs → duplicate messages.
 - Multiple instances or a second scheduler → duplicate pushes.
 - Docker Desktop must be running to rebuild Flutter; the `--rm` container's pub-cache is ephemeral so
   always `pub get` before `build web` (or mount the named pub-cache volume).
@@ -1130,8 +1107,9 @@ exact commits).
 3. **Move from GitHub Actions to an always-on server.** To get reliable, exact-time notifications
    (GitHub delays top-of-hour crons, and free plans sleep), the project added a **FastAPI server +
    in-process APScheduler + Web Push PWA** so one always-on process replaces the cron. The GitHub
-   Actions path was intentionally **kept as an alternate**, which is the root of the double-Telegram
-   caveat.
+   Actions path was initially **kept as an alternate**, which was the root of the double-Telegram
+   caveat. Both are resolved now: the workflow was deleted in 2026-07-16 and Telegram itself was
+   removed in 2026-07-21, leaving web push as the only channel.
 
 4. **PWA reliability fights.** Several commits address stale caching: versioned asset URLs, then a
    network-first shell + auto-reload on SW change, then finally the server-side `no-cache` app-shell
@@ -1193,12 +1171,11 @@ exact commits).
 13. **Open reliability items still not confirmed done (as of the memory note):**
     - **Always-on plan:** free/trial Railway sleeps after ~15 min and skips scheduled pushes → needs
       the Hobby (~$5/mo) plan.
-    - **Double Telegram:** disable the GitHub Actions cron (or don't set `TELEGRAM_*` on Railway) to
-      centralize on one path.
     - **Volume:** confirm the `/app/data` SQLite volume is actually attached in the Railway UI (it's
       created via right-click on the canvas / Ctrl+K, not under Settings).
 
 **Net:** the code is in good shape for its single-user purpose. The three things most likely to trip
-up the next developer are (1) the **manual Flutter build-and-commit** step, (2) the **double-Telegram
-/ schedule-time drift**, and (3) the **no-auth, single-global-portfolio** assumption. Address those
+up the next developer are (1) the **manual Flutter build-and-commit** step, (2) the
+**schedule-time drift** between docs and `scheduler.py`, and (3) the **single-global-portfolio**
+assumption. Address those
 framings first and the rest of the codebase is straightforward.
