@@ -261,6 +261,17 @@ at `GET /api/admin/system-status`.
 This exists because a scraper that returns 200 with an empty list looks exactly
 like one that works.
 
+It also reports a **Notifications** line, which answers a different question from
+all the others: not "did data arrive" but "can anything reach me". The two fail
+independently — the whole pipeline can be green while you hear nothing — so if
+notifications go quiet, start here. It distinguishes the two silent causes:
+
+| What it says | What it means |
+| --- | --- |
+| `VAPID_PRIVATE_KEY absente` | Nothing can ever be sent. Run `cli gen-vapid` and set the key on the host. |
+| `Aucun appareil abonné` | Sends "succeed" with no recipient. Reopen the PWA and re-enable notifications. |
+| `N appareil(s) abonné(s)` | Delivery is configured and has somewhere to go. |
+
 ## CLI
 
 ```bash

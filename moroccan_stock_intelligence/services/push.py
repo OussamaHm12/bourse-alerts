@@ -69,6 +69,28 @@ def save_subscription(session: Session, subscription: dict) -> None:
 
 
 def send_push_to_all(session: Session, title: str, body: str, url: str = "/") -> int:
+    """Deliver one notification to every registered device. Returns the number sent.
+
+    TWO THINGS HERE ARE LOAD-BEARING, both learned from a silent outage
+    -------------------------------------------------------------------
+    1. **Every call is bounded by a timeout.** `pywebpush.webpush()` defaults its
+       `timeout` to `None`, and `requests` reads that as "block forever". The
+       scheduler is a single-threaded `BackgroundScheduler`, so one push endpoint
+       that accepts a connection and never answers does not merely lose its own
+       notification — it parks the job thread indefinitely and every later job
+       (digest, intraday, research, backup) silently stops running.
+
+    2. **One device's failure must not cost the others theirs.** `webpush()` only
+       raises `WebPushException` for an HTTP status above 202; a connection reset,
+       DNS failure or TLS error surfaces as a raw `requests` exception. Catching
+       only `WebPushException` let one unreachable endpoint abort the loop, skip
+       every remaining device, and skip the stale-pruning below — and the callers
+       wrap this in a blanket `except`, so it looked like nothing happened at all.
+
+    Both failures present identically to the owner: notifications simply stop,
+    with no error anywhere. That is why they are handled here rather than left to
+    the caller.
+    """
     if not settings.vapid_private_key:
         LOG.warning("vapid_keys_missing push_skipped=true")
         return 0
@@ -77,8 +99,15 @@ def send_push_to_all(session: Session, title: str, body: str, url: str = "/") ->
     vapid = Vapid01.from_raw(settings.vapid_private_key.encode())
     sent = 0
     stale: list[PushSubscription] = []
+    subscriptions = session.scalars(select(PushSubscription)).all()
 
-    for sub in session.scalars(select(PushSubscription)).all():
+    if not subscriptions:
+        # Not an error, but worth saying: the job ran correctly and reached nobody.
+        # This is what a re-installed PWA or a pruned subscription looks like.
+        LOG.warning("push_no_subscriptions title=%s", title)
+        return 0
+
+    for sub in subscriptions:
         info = {
             "endpoint": sub.endpoint,
             "keys": {"p256dh": sub.p256dh, "auth": sub.auth},
@@ -89,16 +118,25 @@ def send_push_to_all(session: Session, title: str, body: str, url: str = "/") ->
                 data=payload,
                 vapid_private_key=vapid,
                 vapid_claims={"sub": settings.vapid_subject},
+                timeout=settings.push_timeout_seconds,
             )
             sent += 1
         except WebPushException as exc:
+            # 404/410 is the push service saying this device is gone for good.
             status = getattr(exc.response, "status_code", None)
             if status in (404, 410):
                 stale.append(sub)
             LOG.warning("push_failed endpoint=%s status=%s", sub.endpoint[:40], status)
+        except Exception:  # noqa: BLE001 - see (2) above: never abort the batch
+            # Transport-level failure (timeout, reset, DNS, TLS). Transient by
+            # nature, so the subscription is NOT pruned — only a 404/410 proves
+            # the device is really gone.
+            LOG.exception("push_transport_failed endpoint=%s", sub.endpoint[:40])
 
     for sub in stale:
         session.delete(sub)
     session.commit()
-    LOG.info("push_sent count=%s stale_removed=%s", sent, len(stale))
+    LOG.info(
+        "push_sent count=%s of=%s stale_removed=%s", sent, len(subscriptions), len(stale)
+    )
     return sent

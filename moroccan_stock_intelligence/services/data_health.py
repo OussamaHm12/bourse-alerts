@@ -30,6 +30,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from moroccan_stock_intelligence.config import settings
 from moroccan_stock_intelligence.models import (
     AnalysisReport,
     CompanyKnowledge,
@@ -37,8 +38,10 @@ from moroccan_stock_intelligence.models import (
     Fundamental,
     MacroIndicator,
     News,
+    Notification,
     PredictionHistory,
     Price,
+    PushSubscription,
     Stock,
 )
 
@@ -100,14 +103,70 @@ class DomainHealth:
 
 
 @dataclass
+class DeliveryHealth:
+    """Can a notification actually REACH the owner?
+
+    Separate from `DomainHealth` on purpose: every domain above asks "did data
+    arrive", this asks "can anything leave". They fail independently — the whole
+    pipeline can be green while the owner hears nothing — and that combination is
+    invisible unless it is stated.
+
+    Added after exactly that outage: web push had stopped and no diagnostic in the
+    project could say so.
+    """
+
+    vapid_configured: bool
+    subscriptions: int
+    last_notification: datetime | None
+
+    @property
+    def status(self) -> str:
+        if not self.vapid_configured:
+            return EMPTY  # nothing can ever be sent
+        if self.subscriptions == 0:
+            return EMPTY  # nothing to send TO
+        return OK
+
+    @property
+    def detail(self) -> str:
+        if not self.vapid_configured:
+            return (
+                "VAPID_PRIVATE_KEY absente : aucun envoi possible. "
+                "Générer avec `cli gen-vapid`, puis la définir sur l'hôte."
+            )
+        if self.subscriptions == 0:
+            return (
+                "Aucun appareil abonné : les envois réussissent sans destinataire. "
+                "Rouvrir la PWA et réactiver les notifications."
+            )
+        return f"{self.subscriptions} appareil(s) abonné(s)."
+
+    def as_dict(self) -> dict:
+        return {
+            "domain": "Notifications",
+            "vapid_configured": self.vapid_configured,
+            "subscriptions": self.subscriptions,
+            "last_notification": (
+                self.last_notification.isoformat() if self.last_notification else None
+            ),
+            "status": self.status,
+            "detail": self.detail,
+        }
+
+
+@dataclass
 class HealthReport:
     domains: list[DomainHealth] = field(default_factory=list)
     analysts_degraded: list[str] = field(default_factory=list)
     tracked_symbols: int = 0
+    delivery: DeliveryHealth | None = None
 
     @property
     def worst(self) -> str:
-        return max((d.status for d in self.domains), key=lambda s: _SEVERITY[s], default=OK)
+        statuses = [d.status for d in self.domains]
+        if self.delivery is not None:
+            statuses.append(self.delivery.status)
+        return max(statuses, key=lambda s: _SEVERITY[s], default=OK)
 
     @property
     def healthy(self) -> bool:
@@ -120,6 +179,7 @@ class HealthReport:
             "healthy": self.healthy,
             "tracked_symbols": self.tracked_symbols,
             "domains": [d.as_dict() for d in self.domains],
+            "delivery": self.delivery.as_dict() if self.delivery else None,
             "analysts_degraded": self.analysts_degraded,
         }
 
@@ -260,6 +320,14 @@ def check(session: Session) -> HealthReport:
         )
     )
 
+    # Can anything actually reach the owner? Cheap to answer, and the one question
+    # the report could not answer during the push outage.
+    report.delivery = DeliveryHealth(
+        vapid_configured=bool(settings.vapid_private_key),
+        subscriptions=session.scalar(select(func.count()).select_from(PushSubscription)) or 0,
+        last_notification=session.scalar(select(func.max(Notification.created_at))),
+    )
+
     # The point of the whole exercise: name the analysts that are running blind,
     # instead of leaving the owner to infer it from a report full of "données non
     # collectées".
@@ -290,10 +358,20 @@ def render(report: HealthReport) -> str:
             f"{domain.domain:<18}{domain.rows:>9}{domain.age_label:>12}{coverage:>12}  "
             f"{icons[domain.status]}"
         )
+    if report.delivery is not None:
+        lines.append(
+            f"{'Notifications':<18}{report.delivery.subscriptions:>9}"
+            f"{'—':>12}{'—':>12}  {icons[report.delivery.status]}"
+        )
+
     lines.append("")
     for domain in report.domains:
         if domain.status != OK:
             lines.append(f"  · {domain.domain} : {domain.detail}")
+    # Always shown, not only when broken: "notifications work" is the thing the
+    # owner is actually trying to confirm when they run this.
+    if report.delivery is not None:
+        lines.append(f"  · Notifications : {report.delivery.detail}")
 
     if report.analysts_degraded:
         lines += [

@@ -79,6 +79,10 @@ class Settings:
     vapid_public_key: str | None = os.getenv("VAPID_PUBLIC_KEY")
     vapid_private_key: str | None = os.getenv("VAPID_PRIVATE_KEY")
     vapid_subject: str = os.getenv("VAPID_SUBJECT", "mailto:admin@example.com")
+    # MUST be set: pywebpush defaults `timeout` to None, which requests reads as
+    # "wait forever". The scheduler is single-threaded, so one unresponsive push
+    # endpoint would otherwise wedge every later job — the digest included.
+    push_timeout_seconds: float = float(os.getenv("PUSH_TIMEOUT_SECONDS", "10"))
 
     # --- Research database / report cache (Phase 2) ---
     # Reports are served from the store unless older than this, or ?fresh=true.
