@@ -265,3 +265,85 @@ def test_no_subscriptions_is_reported_as_a_warning(session, monkeypatch):
         logging.disable(previous_disable)
 
     assert any("push_no_subscriptions" in r.getMessage() for r in records)
+
+
+# --------------------------------------------------------------------------- #
+# 5. Re-registering a known device is idempotent.                              #
+# --------------------------------------------------------------------------- #
+# `web/push.js` re-POSTs the browser's subscription on every app load, so that a
+# device the server pruned (404/410) or lost (restored backup, fresh volume)
+# repairs itself the next time the owner opens the app, instead of staying silent
+# until someone notices the absence.
+#
+# That repair loop rests entirely on the two properties below. If a re-POST
+# inserted a new row instead of updating in place, every load would grow the
+# table until it hit MAX_SUBSCRIPTIONS and then start REJECTING the owner's real
+# device — turning a self-healing path into a permanent outage.
+
+
+def test_resubscribing_a_known_endpoint_updates_in_place(session):
+    """The browser rotates its keys on its own schedule; that is an update."""
+    endpoint = "https://push.example.com/device-0"
+    push_service.save_subscription(
+        session, {"endpoint": endpoint, "keys": {"p256dh": "first", "auth": "first-auth"}}
+    )
+    session.commit()
+
+    push_service.save_subscription(
+        session, {"endpoint": endpoint, "keys": {"p256dh": "rotated", "auth": "rotated-auth"}}
+    )
+    session.commit()
+
+    rows = session.scalars(select(PushSubscription)).all()
+    assert len(rows) == 1, "a re-POST must not create a second row for the same device"
+    assert rows[0].p256dh == "rotated"
+    assert rows[0].auth == "rotated-auth"
+
+
+def test_reregistering_never_exhausts_the_device_ceiling(session):
+    """A known device re-POSTing forever must never fill the table.
+
+    This is the loop `push.js` actually runs. At the ceiling it would start
+    raising, and the owner's only working device would stop being registerable.
+    """
+    _subscribe(session, n=push_service.MAX_SUBSCRIPTIONS)
+    known = "https://push.example.com/device-0"
+
+    for _ in range(50):
+        push_service.save_subscription(
+            session, {"endpoint": known, "keys": {"p256dh": "p", "auth": "a"}}
+        )
+    session.commit()
+
+    assert len(session.scalars(select(PushSubscription)).all()) == push_service.MAX_SUBSCRIPTIONS
+
+
+def test_a_healed_device_receives_the_next_push(session, monkeypatch):
+    """End to end: prune a device as the push service would, then let it re-register.
+
+    Pins the whole recovery, not just its halves — this is the outage of
+    2026-07-22 replayed: delivery drops to zero recipients, the app reopens, and
+    the next scheduled digest reaches the owner again.
+    """
+    _subscribe(session, n=1)
+
+    response = requests.Response()
+    response.status_code = 410
+
+    def _gone(**kwargs):
+        raise WebPushException("gone", response=response)
+
+    monkeypatch.setattr(push_service, "webpush", _gone)
+    assert push_service.send_push_to_all(session, "t", "b") == 0
+    assert session.scalars(select(PushSubscription)).all() == []
+
+    # The owner reopens the PWA: push.js re-POSTs the subscription the browser
+    # still holds.
+    push_service.save_subscription(
+        session,
+        {"endpoint": "https://push.example.com/device-0", "keys": {"p256dh": "p", "auth": "a"}},
+    )
+    session.commit()
+
+    monkeypatch.setattr(push_service, "webpush", lambda **kw: None)
+    assert push_service.send_push_to_all(session, "t", "b") == 1
